@@ -107,6 +107,8 @@ EOF
 )
 check "npm run forces Bun recursively" \
     equals "$(cd "$fixture" && npm run --silent runtime)" "$("$SANDWICH_BUN" --version)"
+check "pnpm script shorthand maps to Bun run" \
+    equals "$(cd "$fixture" && pnpm runtime)" "$("$SANDWICH_BUN" --version)"
 
 mkdir -p "$fixture/prefix-package"
 cat >"$fixture/prefix-package/package.json" <<'EOF'
