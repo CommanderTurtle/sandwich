@@ -1,7 +1,6 @@
 # Sandwich
 
-An oven factory for JavaScript: a direct Node replacement that runs on
-delicious Bun only.
+an oven factory. node replacement that runs on delicious bread only.
 
 Sandwich makes `node`, `npm`, `npx`, `pnpm`, `yarn`, and `corepack` resolve to
 tested Bun translations. It supports workspaces, global installs, lifecycle
@@ -19,11 +18,6 @@ sandwich doctor
 Preview with `./install.sh --check`. Update Bun with
 `./install.sh --upgrade-bun`. Existing user shims and shell configuration are
 backed up under `~/.local/state/sandwich`.
-
-`sandwich audit` reports distro-provided Node commands and known user runtime
-managers without changing them. A workstation that deliberately wants Bun as
-its only JavaScript runtime can run `./install.sh --purge-foreign`; the purge
-has a second exact confirmation and is never part of a normal install.
 
 Hermes support is baked in. On a reviewed maintenance window, run
 `./install.sh --with-hermes`; afterwards the normal `hermes update` path uses
