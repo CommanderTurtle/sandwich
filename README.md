@@ -21,7 +21,10 @@ backed up under `~/.local/state/sandwich`.
 
 Hermes support is baked in. On a reviewed maintenance window, run
 `./install.sh --with-hermes`; afterwards the normal `hermes update` path uses
-the pinned Bun workspace and UI/TUI build integration.
+the pinned Bun workspace and UI/TUI build integration. Upstream manifest
+changes refresh the carried lock with lifecycle scripts disabled, validate it
+frozen, and fold it into the same local compatibility commit. Run
+`./scripts/reconcile-hermes-runtime.sh` only for an explicit repair/build pass.
 
 Sandwich fails loudly when another package manager’s semantics cannot be
 represented honestly. Runtime state and backups never live in this repository.

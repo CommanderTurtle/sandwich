@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-set -euo pipefail
+set -Eeuo pipefail
 
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 mode="--check"
@@ -10,7 +10,6 @@ patch="$root/patches/hermes-sandwich.patch"
 base_file="$root/patches/hermes-base.sha"
 lock_artifact="$root/config/hermes.bun.lock"
 bunfig_artifact="$root/config/hermes.bunfig.toml"
-state_root="${SANDWICH_STATE_ROOT:-$HOME/.local/state/sandwich}"
 protected_roots="${SANDWICH_PROTECTED_ROOTS:-$HOME/Hermes:$HOME/Odysseus}"
 
 for arg in "$@"; do
@@ -39,15 +38,32 @@ for artifact in "$patch" "$base_file" "$lock_artifact" "$bunfig_artifact"; do
     }
 done
 
-live_head="$(git -C "$live" rev-parse HEAD)"
-base_head="$(tr -d '[:space:]' <"$base_file")"
+maintenance_current() {
+    [[ -f "$live/bun.lock" && -f "$live/bunfig.toml" ]] || return 1
+    grep -Fq 'def _run_bun_install_deterministic(' \
+        "$live/hermes_cli/main.py" || return 1
+    grep -Fq 'def _reconcile_carried_bun_lock(' \
+        "$live/hermes_cli/main.py" || return 1
+    grep -Fq '"packageManager": "bun@' "$live/package.json" || return 1
+    grep -Fq '"@hermes/shared": "workspace:*"' \
+        "$live/web/package.json" || return 1
+}
+
 printf 'Hermes Bun maintenance\n'
 printf '  live:        %s\n' "$live"
-printf '  live HEAD:   %s\n' "$live_head"
-printf '  patch base:  %s\n' "$base_head"
+printf '  live HEAD:   %s\n' "$(git -C "$live" rev-parse HEAD)"
+printf '  patch base:  %s\n' "$(tr -d '[:space:]' <"$base_file")"
+
+if maintenance_current; then
+    printf '  result: current; Hermes owns a clean carried Bun compatibility commit\n'
+    exit 0
+fi
+
+base_head="$(tr -d '[:space:]' <"$base_file")"
+live_head="$(git -C "$live" rev-parse HEAD)"
 [[ "$live_head" == "$base_head" ]] || {
-    printf 'refusing: patch artifacts target a different Hermes commit\n' >&2
-    printf 'run refresh-hermes-artifacts.sh after reviewing the updated live diff\n' >&2
+    printf 'refusing: the reviewed patch targets a different Hermes upstream commit\n' >&2
+    printf 'update Sandwich or refresh its reviewed Hermes artifacts first\n' >&2
     exit 1
 }
 
@@ -58,7 +74,8 @@ for proc in /proc/[0-9]*; do
     cmdline="$({ tr '\0' ' ' <"$proc/cmdline"; } 2>/dev/null || true)"
     cwd="$(readlink -f "$proc/cwd" 2>/dev/null || true)"
     if [[ "$cmdline" == *"$live"* || "$cwd" == "$live"* ]]; then
-        printf '  process blocker: pid=%s cwd=%s cmd=%s\n' "$pid" "$cwd" "$cmdline"
+        printf '  process blocker: pid=%s cwd=%s cmd=%s\n' \
+            "$pid" "$cwd" "$cmdline"
         blockers=$((blockers + 1))
     fi
 done
@@ -81,7 +98,8 @@ if command -v docker >/dev/null 2>&1; then
             }
             case "$compose_dir" in
                 "$protected_root"|"$protected_root"/*)
-                    printf '  container blocker: %s (%s)\n' "$container" "$compose_dir"
+                    printf '  container blocker: %s (%s)\n' \
+                        "$container" "$compose_dir"
                     blockers=$((blockers + 1))
                     break
                     ;;
@@ -92,88 +110,55 @@ fi
 
 if ((blockers)); then
     if [[ "$allow_active" == true ]]; then
-        printf '  warning: continuing with %d active production blocker(s) by explicit override\n' "$blockers" >&2
+        printf '  warning: continuing with %d active production blocker(s) by explicit override\n' \
+            "$blockers" >&2
     else
-        printf '  result: REFUSED (%d active production blocker(s)); pass --allow-active only during an authorized maintenance window\n' "$blockers" >&2
+        printf '  result: REFUSED (%d active production blocker(s)); pass --allow-active only during an authorized maintenance window\n' \
+            "$blockers" >&2
         exit 3
     fi
 fi
 
-already_applied=false
-if cmp -s \
-    <(git -C "$live" diff --binary HEAD --) \
-    "$patch"; then
-    already_applied=true
-    for artifact in bun.lock bunfig.toml; do
-        source="$lock_artifact"
-        [[ "$artifact" == bunfig.toml ]] && source="$bunfig_artifact"
-        if ! cmp -s "$live/$artifact" "$source"; then
-            printf '  staged patch matches, but %s differs from the validated artifact\n' \
-                "$artifact" >&2
-            exit 4
-        fi
-    done
-fi
-
-if [[ "$already_applied" == false ]]; then
-    unexpected=0
-    while IFS= read -r line; do
-        [[ -n "$line" ]] || continue
-        path="${line:3}"
-        case "$path" in
-            package.json|uv.lock|web/package.json) ;;
-            *)
-                printf '  unexpected tracked live change: %s\n' "$line" >&2
-                unexpected=$((unexpected + 1))
-                ;;
-        esac
-    done < <(git -C "$live" status --porcelain --untracked-files=no)
-    ((unexpected == 0)) || {
-        printf 'refusing to overwrite unrelated tracked changes\n' >&2
-        exit 4
-    }
-fi
+tracked_changes="$(
+    git -C "$live" status --porcelain --untracked-files=no
+)"
+[[ -z "$tracked_changes" ]] || {
+    printf 'refusing to mix the maintenance profile with tracked worktree changes\n' >&2
+    printf '%s\n' "$tracked_changes" >&2
+    exit 4
+}
 
 if [[ "$mode" == "--check" ]]; then
-    if [[ "$already_applied" == true ]]; then
-        printf '  result: current; live patch and Bun artifacts match the self-contained maintenance bundle\n'
-    else
-        printf '  result: ready; pass --apply%s during the maintenance window\n' \
-            "$([[ "$allow_active" == true ]] && printf ' --allow-active')"
-    fi
+    git -C "$live" apply --check "$patch"
+    printf '  result: ready; pass --apply%s during the maintenance window\n' \
+        "$([[ "$allow_active" == true ]] && printf ' --allow-active')"
     exit 0
 fi
 
-if [[ "$already_applied" == true ]]; then
-    printf '  result: already applied; no files changed and no service was restarted\n'
-    exit 0
-fi
-
-timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
-backup="$state_root/hermes-maintenance/$timestamp"
-mkdir -p -- "$backup"
-for path in package.json uv.lock web/package.json bun.lock bunfig.toml; do
-    [[ -f "$live/$path" ]] || continue
-    mkdir -p -- "$backup/$(dirname -- "$path")"
-    cp -a -- "$live/$path" "$backup/$path"
-done
-
-git -C "$live" restore --source=HEAD -- package.json uv.lock web/package.json
 git -C "$live" apply --check "$patch"
 git -C "$live" apply "$patch"
 install -m 0644 -- "$lock_artifact" "$live/bun.lock"
 install -m 0644 -- "$bunfig_artifact" "$live/bunfig.toml"
 
-export BUN_INSTALL="$HOME/.bun"
+export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
 export DO_NOT_TRACK=1
 export PATH="$HOME/.local/bin:$BUN_INSTALL/bin:$PATH"
 cd "$live"
-bun install --frozen-lockfile --filter "./" --filter "./ui-tui" --filter "./web"
+bun install --frozen-lockfile --no-progress \
+    --filter "./" \
+    --filter "./ui-tui" \
+    --filter "./web"
 bun run --bun --filter "./ui-tui" build
 bun run --bun --filter "./web" build
 "$live/venv/bin/python" -m py_compile "$live/hermes_cli/main.py"
+
+git -C "$live" add -A
+git -C "$live" \
+    -c user.name=CommanderTurtle \
+    -c user.email=CommanderTurtle@users.noreply.github.com \
+    commit --no-verify -m "Keep Hermes updates native to Bun"
+
 "$root/bin/sandwich" doctor
 
-printf '  backup: %s\n' "$backup"
-printf '  result: staged patch applied and built; no service was restarted\n'
-printf '  next: run `hermes update` interactively while the maintenance window remains open\n'
+printf '  result: applied, built, and committed as one carried compatibility change\n'
+printf '  normal `hermes update` now preserves and refreshes that commit automatically\n'

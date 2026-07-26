@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-set -euo pipefail
+set -Eeuo pipefail
 
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 live="${HERMES_LIVE_DIR:-$HOME/.hermes/hermes-agent}"
@@ -21,16 +21,36 @@ upstream_ref="${HERMES_UPSTREAM_REF:-origin/main}"
 
 live_head="$(git -C "$live" rev-parse HEAD)"
 origin_head="$(git -C "$live" rev-parse "$upstream_ref")"
-[[ "$live_head" == "$origin_head" ]] || {
-    printf 'refusing: live HEAD is not %s\n' "$upstream_ref" >&2
+git -C "$live" merge-base --is-ancestor "$origin_head" "$live_head" || {
+    printf 'refusing: %s is not an ancestor of the managed Hermes checkout\n' \
+        "$upstream_ref" >&2
     exit 1
+}
+[[ -z "$(git -C "$live" status --porcelain --untracked-files=no)" ]] || {
+    printf 'refusing to capture a dirty Hermes worktree\n' >&2
+    exit 4
 }
 
 allowed=(
+    hermes_cli/banner.py
     hermes_cli/gateway.py
     hermes_cli/main.py
     package.json
+    skills/ctx-mode/DESCRIPTION.md
+    skills/ctx-mode/context-mode/SKILL.md
+    skills/ctx-mode/context-mode/references/anti-patterns.md
+    skills/ctx-mode/context-mode/references/patterns-javascript.md
+    skills/ctx-mode/context-mode/references/patterns-python.md
+    skills/ctx-mode/context-mode/references/patterns-shell.md
+    skills/ctx-mode/ctx-doctor/SKILL.md
+    skills/ctx-mode/ctx-index/SKILL.md
+    skills/ctx-mode/ctx-insight/SKILL.md
+    skills/ctx-mode/ctx-purge/SKILL.md
+    skills/ctx-mode/ctx-search/SKILL.md
+    skills/ctx-mode/ctx-stats/SKILL.md
+    skills/ctx-mode/ctx-upgrade/SKILL.md
     tests-js/package-json-lazy-deps.test.ts
+    tests/hermes_cli/test_banner.py
     tests/hermes_cli/test_cmd_update.py
     tests/hermes_cli/test_systemd_optional_directives.py
     tests/hermes_cli/test_web_ui_build.py
@@ -41,30 +61,28 @@ allowed=(
     web/package.json
 )
 
-unexpected=0
-while IFS= read -r line; do
-    [[ -n "$line" ]] || continue
-    path="${line:3}"
-    match=false
-    for candidate in "${allowed[@]}"; do
-        [[ "$path" == "$candidate" ]] && match=true && break
-    done
-    if [[ "$match" == false ]]; then
-        printf 'unexpected tracked live change: %s\n' "$line" >&2
-        unexpected=$((unexpected + 1))
-    fi
-done < <(git -C "$live" status --porcelain --untracked-files=no)
-((unexpected == 0)) || {
-    printf 'refusing to capture unrelated tracked changes\n' >&2
+expected="$(printf '%s\n' "${allowed[@]}" bun.lock bunfig.toml | sort)"
+actual="$(
+    git -C "$live" diff --name-only "$origin_head" "$live_head" | sort
+)"
+[[ "$actual" == "$expected" ]] || {
+    printf 'refusing: the managed Hermes diff no longer matches the reviewed allowlist\n' >&2
+    diff -u <(printf '%s\n' "$expected") <(printf '%s\n' "$actual") >&2 || true
     exit 4
 }
 
-git -C "$live" diff --binary --output="$patch" HEAD -- "${allowed[@]}"
-printf '%s\n' "$live_head" >"$base_file"
+git -C "$live" diff \
+    --binary \
+    --output="$patch" \
+    "$origin_head" \
+    "$live_head" \
+    -- \
+    "${allowed[@]}"
+printf '%s\n' "$origin_head" >"$base_file"
 install -m 0644 "$live/bun.lock" "$lock_artifact"
 install -m 0644 "$live/bunfig.toml" "$bunfig_artifact"
 
 printf 'Hermes maintenance artifacts refreshed\n'
-printf '  base:  %s\n' "$live_head"
+printf '  base:  %s\n' "$origin_head"
 printf '  patch: %s\n' "$(sha256sum "$patch" | cut -d' ' -f1)"
 printf '  lock:  %s\n' "$(sha256sum "$lock_artifact" | cut -d' ' -f1)"
