@@ -6,14 +6,17 @@ root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 mode=apply
 upgrade_bun=0
 with_hermes=0
+purge_foreign=0
 
 usage() {
     cat <<'EOF'
-Usage: ./install.sh [--check] [--upgrade-bun] [--with-hermes]
+Usage: ./install.sh [--check] [--upgrade-bun] [--with-hermes] [--purge-foreign]
 
   --check         inspect the install without changing anything
   --upgrade-bun   update an existing Bun stable installation first
   --with-hermes   apply the pinned native-Bun Hermes update profile
+  --purge-foreign remove Debian Node packages and known user Node managers
+                  after an exact interactive confirmation
 
 The default install is user-scoped. Existing command shims and shell files are
 backed up under ~/.local/state/sandwich before replacement.
@@ -25,6 +28,7 @@ while (($#)); do
         --check) mode=check ;;
         --upgrade-bun) upgrade_bun=1 ;;
         --with-hermes) with_hermes=1 ;;
+        --purge-foreign) purge_foreign=1 ;;
         -h|--help) usage; exit 0 ;;
         *) printf 'sandwich: unknown option: %s\n' "$1" >&2; usage >&2; exit 2 ;;
     esac
@@ -45,6 +49,9 @@ if [[ "$mode" == check ]]; then
     if [[ "$with_hermes" -eq 1 ]]; then
         "$root/scripts/apply-hermes-maintenance.sh" --check
     fi
+    if [[ "$purge_foreign" -eq 1 ]]; then
+        "$root/scripts/purge-foreign-runtimes.sh" --check
+    fi
     exit 0
 fi
 
@@ -60,6 +67,17 @@ elif [[ "$upgrade_bun" -eq 1 ]]; then
 fi
 
 "$root/scripts/install-user.sh" --apply
+if [[ "$purge_foreign" -eq 1 ]]; then
+    [[ -t 0 ]] || {
+        echo 'sandwich: --purge-foreign requires an interactive terminal' >&2
+        exit 1
+    }
+    printf 'Type PURGE-FOREIGN-JS to remove other JavaScript runtimes: '
+    read -r purge_confirmation
+    "$root/scripts/purge-foreign-runtimes.sh" \
+        --apply \
+        --confirm "$purge_confirmation"
+fi
 if [[ "$with_hermes" -eq 1 ]]; then
     "$root/scripts/apply-hermes-maintenance.sh" --apply
 fi

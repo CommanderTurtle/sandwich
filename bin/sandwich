@@ -57,13 +57,16 @@ case "${1:-doctor}" in
     doctor|status)
         doctor
         ;;
+    audit)
+        exec "$SANDWICH_ROOT/scripts/purge-foreign-runtimes.sh" --check
+        ;;
     version|--version|-v)
-        printf '%s\n' '0.3.0'
+        printf '%s\n' '0.4.0'
         ;;
     help|--help|-h)
-        printf '%s\n' 'usage: sandwich [doctor|version|help]'
+        printf '%s\n' 'usage: sandwich [doctor|audit|version|help]'
         ;;
     *)
-        bs_die "usage: sandwich [doctor|version|help]"
+        bs_die "usage: sandwich [doctor|audit|version|help]"
         ;;
 esac

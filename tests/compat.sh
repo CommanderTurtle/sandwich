@@ -45,6 +45,7 @@ check "component manifest matches CLI version" \
         if (manifest.schema_version !== "sandwich.component.v1") process.exit(1);
         if (manifest.version !== Bun.spawnSync([`${root}/bin/sandwich`, "--version"]).stdout.toString().trim()) process.exit(1);
         if (manifest.operations.hermes_apply.human_confirmation !== true) process.exit(1);
+        if (manifest.operations.audit.mutating !== false) process.exit(1);
     '
 check "node runtime is Bun" equals "$(node -p 'process.versions.bun')" "$("$SANDWICH_BUN" --version)"
 check "node eval" equals "$(node -e 'process.stdout.write(String(6 * 7))')" "42"
@@ -139,6 +140,8 @@ check "npm ci uses frozen bun.lock" \
     bash -c 'cd "$1" && npm ci --ignore-scripts --no-audit --no-fund --progress=false >/dev/null' _ "$fixture"
 
 check "user installer check is read-only and succeeds" "$root/scripts/install-user.sh" --check
+check "foreign runtime audit is read-only and succeeds" \
+    "$root/scripts/purge-foreign-runtimes.sh" --check
 for artifact in \
     "$root/config/hermes.bun.lock" \
     "$root/config/hermes.bunfig.toml" \

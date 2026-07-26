@@ -1,7 +1,7 @@
 {
   "schema_version": "sandwich.component.v1",
   "id": "sandwich",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "runtime": "bun",
   "install_scope": "user",
   "repository": "https://github.com/CommanderTurtle/sandwich.git",
@@ -17,6 +17,11 @@
   "operations": {
     "doctor": {
       "argv": ["bin/sandwich", "doctor"],
+      "mutating": false,
+      "human_confirmation": false
+    },
+    "audit": {
+      "argv": ["scripts/purge-foreign-runtimes.sh", "--check"],
       "mutating": false,
       "human_confirmation": false
     },
