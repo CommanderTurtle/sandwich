@@ -14,7 +14,8 @@ Usage: ./install.sh [--check] [--upgrade-bun] [--with-hermes] [--purge-foreign]
 
   --check         inspect the install without changing anything
   --upgrade-bun   update an existing Bun stable installation first
-  --with-hermes   apply the pinned native-Bun Hermes update profile
+  --with-hermes   verify an existing official Hermes install through Sandwich;
+                  this never changes Hermes source
   --purge-foreign remove Debian Node packages and known user Node managers
                   after an exact interactive confirmation
 
@@ -47,7 +48,7 @@ if [[ "$mode" == check ]]; then
     fi
     "$root/scripts/install-user.sh" --check
     if [[ "$with_hermes" -eq 1 ]]; then
-        "$root/scripts/apply-hermes-maintenance.sh" --check
+        "$root/scripts/update-hermes.sh" --check
     fi
     if [[ "$purge_foreign" -eq 1 ]]; then
         "$root/scripts/purge-foreign-runtimes.sh" --check
@@ -79,7 +80,10 @@ if [[ "$purge_foreign" -eq 1 ]]; then
         --confirm "$purge_confirmation"
 fi
 if [[ "$with_hermes" -eq 1 ]]; then
-    "$root/scripts/apply-hermes-maintenance.sh" --apply
+    "$root/scripts/update-hermes.sh" --check
 fi
 
 printf '\nSandwich is ready. Open a new shell or run: source ~/.bashrc\n'
+if [[ "$with_hermes" -eq 1 ]]; then
+    printf 'Update Hermes with: sandwich hermes update\n'
+fi

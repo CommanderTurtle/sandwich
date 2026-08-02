@@ -1,7 +1,7 @@
 ---
 name: sandwich-runtime
 description: Operate and maintain a Bun-only JavaScript environment through Sandwich's compatibility commands.
-version: 1.0.0
+version: 1.1.0
 metadata:
   hermes:
     tags: [bun, javascript, runtime, compatibility, sandwich]
@@ -36,8 +36,13 @@ runtimes or package managers.
 
 - Update Bun with `./install.sh --upgrade-bun`.
 - Re-apply user command shims with `./install.sh`.
-- Apply the reviewed Hermes build/update profile only with
-  `./install.sh --with-hermes`.
+- Keep the official Hermes checkout pristine. Never patch or commit Bun
+  compatibility files into Hermes.
+- Update Hermes only with `sandwich hermes update`; Sandwich runs the official
+  updater and supplies Bun-compatible Node/npm commands externally.
+- Use `sandwich hermes check` to verify that Hermes has no local source files.
+- `./install.sh --with-hermes` only verifies an existing Hermes installation;
+  it does not modify Hermes.
 - Finish by running `sandwich doctor` and the repository's own checks.
 
 Runtime state and installer backups belong under Sandwich's user state

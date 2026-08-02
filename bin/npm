@@ -4,14 +4,17 @@ source "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/../lib/common.sh"
 
 translate_install_args() {
     translated=()
+    local include_dev=0
     local value
     while (($#)); do
         case "$1" in
             --include=dev|--include-dev|--fund=false|--no-fund|--audit=false|--no-audit)
+                [[ "$1" == --include=dev || "$1" == --include-dev ]] && include_dev=1
                 shift
                 ;;
             --include)
                 [[ "${2:-}" == "dev" ]] || bs_die "unsupported npm install option: --include ${2:-}"
+                include_dev=1
                 shift 2
                 ;;
             --progress=false)
@@ -32,7 +35,8 @@ translate_install_args() {
                 shift 2
                 ;;
             --workspaces=false|--no-workspaces)
-                bs_die "npm root-only workspace install is ambiguous in Bun; use an explicit bun --filter"
+                translated+=(--filter "./")
+                shift
                 ;;
             --workspaces=true|--workspaces|--ws)
                 shift
@@ -79,6 +83,85 @@ translate_install_args() {
                 ;;
         esac
     done
+    if ((include_dev)); then
+        unset NODE_ENV NPM_CONFIG_PRODUCTION npm_config_production \
+            NPM_CONFIG_OMIT npm_config_omit
+    fi
+}
+
+install_with_transient_lock() {
+    local state_dir="$1"
+    shift
+    [[ "$state_dir" == /* ]] || \
+        bs_die "SANDWICH_TRANSIENT_LOCK_DIR must be an absolute path"
+
+    local source_key state_key="" invocation_key
+    local attempt current_hash previous_hash="" stable=""
+    local hidden_package_lock="$PWD/.sandwich-package-lock.json"
+    invocation_key="$(printf '%s\0' "$@" | sha256sum | cut -d' ' -f1)"
+    local state_lock="$state_dir/$invocation_key.bun.lock"
+    local state_key_file="$state_dir/$invocation_key.source.key"
+    if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        source_key="git:$(git rev-parse HEAD)"
+    else
+        source_key="package-lock:$(sha256sum package-lock.json | cut -d' ' -f1)"
+    fi
+    source_key="bun:$($SANDWICH_BIN --version):$source_key"
+
+    mkdir -p -- "$state_dir"
+    chmod 0700 -- "$state_dir"
+    [[ -f "$state_key_file" ]] && \
+        IFS= read -r state_key <"$state_key_file"
+
+    cleanup_transient_lock() {
+        rm -f -- bun.lock bun.lockb
+        if [[ -f "$hidden_package_lock" && ! -e package-lock.json ]]; then
+            mv -f -- "$hidden_package_lock" package-lock.json
+        fi
+    }
+    trap cleanup_transient_lock EXIT HUP INT TERM
+
+    [[ ! -e "$hidden_package_lock" ]] || \
+        bs_die "stale transient package-lock file exists: $hidden_package_lock"
+    mv -- package-lock.json "$hidden_package_lock"
+
+    if [[ "$state_key" == "$source_key" && -s "$state_lock" ]]; then
+        install -m 0600 -- "$state_lock" bun.lock
+        if "$SANDWICH_BIN" install --frozen-lockfile "$@"; then
+            cleanup_transient_lock
+            trap - EXIT HUP INT TERM
+            return 0
+        fi
+        bs_note "cached Bun lock no longer freezes; rebuilding it outside the source tree"
+    fi
+
+    # Bun can rewrite a freshly generated workspace lock once on its next
+    # install. Let it converge, then prove the final lock is frozen before
+    # publishing that lock to Sandwich's external state directory.
+    rm -f -- bun.lock bun.lockb
+    for attempt in 1 2 3 4; do
+        "$SANDWICH_BIN" install "$@"
+        [[ -s bun.lock ]] || \
+            bs_die "Bun did not generate the transient compatibility lock"
+        current_hash="$(sha256sum bun.lock | cut -d' ' -f1)"
+        if [[ -n "$previous_hash" && "$current_hash" == "$previous_hash" ]]; then
+            stable=1
+            break
+        fi
+        previous_hash="$current_hash"
+    done
+    [[ -n "$stable" ]] || \
+        bs_die "Bun's transient compatibility lock did not converge"
+    "$SANDWICH_BIN" install --frozen-lockfile "$@"
+
+    install -m 0600 -- bun.lock "$state_lock.new"
+    printf '%s\n' "$source_key" >"$state_key_file.new"
+    chmod 0600 -- "$state_key_file.new"
+    mv -f -- "$state_lock.new" "$state_lock"
+    mv -f -- "$state_key_file.new" "$state_key_file"
+    cleanup_transient_lock
+    trap - EXIT HUP INT TERM
+    bs_note "stored the Bun lock outside its source tree: $state_lock"
 }
 
 run_script() {
@@ -149,9 +232,21 @@ case "$command_name" in
         exec "$SANDWICH_BIN" install "${translated[@]}"
         ;;
     ci|clean-install|ic)
-        [[ -f bun.lock ]] || bs_die "npm ci requires an existing bun.lock in Sandwich mode"
         translate_install_args "$@"
-        exec "$SANDWICH_BIN" install --frozen-lockfile "${translated[@]}"
+        if [[ -f bun.lock || -f bun.lockb ]]; then
+            exec "$SANDWICH_BIN" install --frozen-lockfile "${translated[@]}"
+        fi
+        [[ -f package-lock.json ]] || \
+            bs_die "npm ci requires bun.lock or package-lock.json in Sandwich mode"
+        if [[ -n "${SANDWICH_TRANSIENT_LOCK_DIR:-}" ]]; then
+            install_with_transient_lock \
+                "$SANDWICH_TRANSIENT_LOCK_DIR" \
+                "${translated[@]}"
+            exit $?
+        fi
+        # Bun imports npm's tracked lock in memory. --no-save keeps the foreign
+        # project pristine instead of adding a Bun lockfile to its source tree.
+        exec "$SANDWICH_BIN" install --no-save "${translated[@]}"
         ;;
     run|run-script)
         run_script "$@"

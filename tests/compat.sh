@@ -44,7 +44,9 @@ check "component manifest matches CLI version" \
         const manifest = await Bun.file(`${root}/manifest.json`).json();
         if (manifest.schema_version !== "sandwich.component.v1") process.exit(1);
         if (manifest.version !== Bun.spawnSync([`${root}/bin/sandwich`, "--version"]).stdout.toString().trim()) process.exit(1);
-        if (manifest.operations.hermes_apply.human_confirmation !== true) process.exit(1);
+        if (manifest.operations.hermes_update.human_confirmation !== true) process.exit(1);
+        if (manifest.operations.hermes_check.mutating !== false) process.exit(1);
+        if (manifest.integrations.hermes.source_mutation !== false) process.exit(1);
         if (manifest.operations.audit.mutating !== false) process.exit(1);
     '
 check "node runtime is Bun" equals "$(node -p 'process.versions.bun')" "$("$SANDWICH_BUN" --version)"
@@ -139,26 +141,55 @@ check "node --test maps to Bun test" node --test "$fixture/node-test.mjs"
 check "npm ci uses frozen bun.lock" \
     bash -c 'cd "$1" && npm ci --ignore-scripts --no-audit --no-fund --progress=false >/dev/null' _ "$fixture"
 
+mkdir -p "$fixture/npm-lock-only"
+cat >"$fixture/npm-lock-only/package.json" <<'EOF'
+{
+  "name": "npm-lock-only",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "fixture-dep": "file:../fixture-dep"
+  }
+}
+EOF
+cat >"$fixture/npm-lock-only/package-lock.json" <<'EOF'
+{
+  "name": "npm-lock-only",
+  "version": "1.0.0",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "npm-lock-only",
+      "version": "1.0.0",
+      "dependencies": {
+        "fixture-dep": "file:../fixture-dep"
+      }
+    }
+  }
+}
+EOF
+check "npm ci keeps its frozen compatibility lock outside the project" \
+    bash -c 'cd "$1" && SANDWICH_TRANSIENT_LOCK_DIR="$1/transient-state" npm ci --workspaces=false >/dev/null && compgen -G "transient-state/*.bun.lock" >/dev/null && test ! -e bun.lock && test ! -e bun.lockb' _ "$fixture/npm-lock-only"
+
 check "user installer check is read-only and succeeds" "$root/scripts/install-user.sh" --check
 check "foreign runtime audit is read-only and succeeds" \
     "$root/scripts/purge-foreign-runtimes.sh" --check
-for artifact in \
+for retired in \
     "$root/config/hermes.bun.lock" \
     "$root/config/hermes.bunfig.toml" \
     "$root/patches/hermes-base.sha" \
-    "$root/patches/hermes-sandwich.patch"; do
-    check "Hermes profile artifact: ${artifact#$root/}" test -s "$artifact"
+    "$root/patches/hermes-sandwich.patch" \
+    "$root/scripts/apply-hermes-maintenance.sh" \
+    "$root/scripts/reconcile-hermes-runtime.sh" \
+    "$root/scripts/refresh-hermes-artifacts.sh"; do
+    check "Hermes source-mutation artifact is absent: ${retired#$root/}" test ! -e "$retired"
 done
-check "Hermes profile patch is parseable" \
-    git apply --numstat "$root/patches/hermes-sandwich.patch"
+check "Hermes wrapper help is available" \
+    contains "$(sandwich hermes help)" "never patched"
 
-if (cd "$fixture" && npm install --workspaces=false >/dev/null 2>&1); then
-    printf 'not ok - ambiguous workspace install must fail loudly\n' >&2
-    failed=$((failed + 1))
-else
-    printf 'ok - ambiguous workspace install fails loudly\n'
-    passed=$((passed + 1))
-fi
+check "npm root-only workspace install maps to the root filter" \
+    bash -c 'cd "$1" && npm install --workspaces=false --no-save >/dev/null' _ "$fixture"
 
 for file in "$root"/bin/* "$root"/lib/*.sh "$root"/scripts/*.sh "$root"/tests/*.sh; do
     check "bash syntax: ${file#$root/}" bash -n "$file"

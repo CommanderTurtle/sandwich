@@ -60,21 +60,42 @@ case "${1:-doctor}" in
     audit)
         exec "$SANDWICH_ROOT/scripts/purge-foreign-runtimes.sh" --check
         ;;
+    hermes)
+        shift
+        case "${1:-}" in
+            update)
+                shift
+                exec "$SANDWICH_ROOT/scripts/update-hermes.sh" "$@"
+                ;;
+            check|status)
+                shift
+                exec "$SANDWICH_ROOT/scripts/update-hermes.sh" --check "$@"
+                ;;
+            help|--help|-h|'')
+                exec "$SANDWICH_ROOT/scripts/update-hermes.sh" --help
+                ;;
+            *)
+                bs_die "usage: sandwich hermes [update|check]"
+                ;;
+        esac
+        ;;
     version|--version|-v)
-        printf '%s\n' '0.4.1'
+        printf '%s\n' '0.5.0'
         ;;
     help|--help|-h)
         cat <<'EOF'
-usage: sandwich [doctor|audit|version|help]
+usage: sandwich [doctor|audit|hermes|version|help]
 
   sandwich doctor  verify Bun and every compatibility shim
   sandwich audit   report foreign JavaScript runtimes without changing them
+  sandwich hermes update  update pristine Hermes through the Bun shims
+  sandwich hermes check   verify the official Hermes checkout is pristine
 
-Hermes integration is installed once with ./install.sh --with-hermes.
-Afterward, `hermes update` remains the sole Hermes update command.
+Sandwich never patches or commits into Hermes. Do not Git-pull Hermes by hand;
+use `sandwich hermes update` as the complete update command.
 EOF
         ;;
     *)
-        bs_die "usage: sandwich [doctor|audit|version|help]"
+        bs_die "usage: sandwich [doctor|audit|hermes|version|help]"
         ;;
 esac
