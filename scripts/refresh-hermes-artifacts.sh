@@ -32,9 +32,11 @@ git -C "$live" merge-base --is-ancestor "$origin_head" "$live_head" || {
 }
 
 allowed=(
+    apps/shared/package.json
     hermes_cli/banner.py
     hermes_cli/gateway.py
     hermes_cli/main.py
+    hermes_cli/update_cmd.py
     package.json
     skills/ctx-mode/DESCRIPTION.md
     skills/ctx-mode/context-mode/SKILL.md
@@ -50,10 +52,7 @@ allowed=(
     skills/ctx-mode/ctx-stats/SKILL.md
     skills/ctx-mode/ctx-upgrade/SKILL.md
     tests-js/package-json-lazy-deps.test.ts
-    tests/hermes_cli/test_banner.py
-    tests/hermes_cli/test_cmd_update.py
     tests/hermes_cli/test_systemd_optional_directives.py
-    tests/hermes_cli/test_web_ui_build.py
     ui-tui/package.json
     ui-tui/packages/hermes-ink/package.json
     ui-tui/src/__tests__/gatewayClient.test.ts

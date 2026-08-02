@@ -43,7 +43,7 @@ maintenance_current() {
     grep -Fq 'def _run_bun_install_deterministic(' \
         "$live/hermes_cli/main.py" || return 1
     grep -Fq 'def _reconcile_carried_bun_lock(' \
-        "$live/hermes_cli/main.py" || return 1
+        "$live/hermes_cli/update_cmd.py" || return 1
     grep -Fq '"packageManager": "bun@' "$live/package.json" || return 1
     grep -Fq '"@hermes/shared": "workspace:*"' \
         "$live/web/package.json" || return 1
@@ -146,11 +146,14 @@ export PATH="$HOME/.local/bin:$BUN_INSTALL/bin:$PATH"
 cd "$live"
 bun install --frozen-lockfile --no-progress \
     --filter "./" \
+    --filter "./apps/shared" \
     --filter "./ui-tui" \
     --filter "./web"
 bun run --bun --filter "./ui-tui" build
 bun run --bun --filter "./web" build
-"$live/venv/bin/python" -m py_compile "$live/hermes_cli/main.py"
+"$live/venv/bin/python" -m py_compile \
+    "$live/hermes_cli/main.py" \
+    "$live/hermes_cli/update_cmd.py"
 
 git -C "$live" add -A
 git -C "$live" \

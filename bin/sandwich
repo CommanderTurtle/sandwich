@@ -61,10 +61,18 @@ case "${1:-doctor}" in
         exec "$SANDWICH_ROOT/scripts/purge-foreign-runtimes.sh" --check
         ;;
     version|--version|-v)
-        printf '%s\n' '0.4.0'
+        printf '%s\n' '0.4.1'
         ;;
     help|--help|-h)
-        printf '%s\n' 'usage: sandwich [doctor|audit|version|help]'
+        cat <<'EOF'
+usage: sandwich [doctor|audit|version|help]
+
+  sandwich doctor  verify Bun and every compatibility shim
+  sandwich audit   report foreign JavaScript runtimes without changing them
+
+Hermes integration is installed once with ./install.sh --with-hermes.
+Afterward, `hermes update` remains the sole Hermes update command.
+EOF
         ;;
     *)
         bs_die "usage: sandwich [doctor|audit|version|help]"

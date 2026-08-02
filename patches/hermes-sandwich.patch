@@ -1,8 +1,21 @@
+diff --git a/apps/shared/package.json b/apps/shared/package.json
+index 40b4fa4fe3..75716d31f2 100644
+--- a/apps/shared/package.json
++++ b/apps/shared/package.json
+@@ -19,6 +19,7 @@
+     "check": "npm run typecheck && npm run lint"
+   },
+   "devDependencies": {
+-    "typescript": "6.0.3"
++    "typescript": "6.0.3",
++    "vitest": "4.1.10"
+   }
+ }
 diff --git a/hermes_cli/banner.py b/hermes_cli/banner.py
-index 08e2ceeb1..341f6cd30 100644
+index 3f4f893be7..a62f55aa0b 100644
 --- a/hermes_cli/banner.py
 +++ b/hermes_cli/banner.py
-@@ -234,15 +234,26 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
+@@ -249,15 +249,26 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
      if is_shallow:
          # No history to count across the shallow boundary. `origin/main` may not
          # be a tracking ref in a `clone --depth 1`, so prefer FETCH_HEAD (just
@@ -37,10 +50,10 @@ index 08e2ceeb1..341f6cd30 100644
      try:
          result = subprocess.run(
 diff --git a/hermes_cli/gateway.py b/hermes_cli/gateway.py
-index ce60bfb2c..ad57b6ece 100644
+index 681ce09c9e..f4fc1d8697 100644
 --- a/hermes_cli/gateway.py
 +++ b/hermes_cli/gateway.py
-@@ -2907,6 +2907,33 @@ def _strip_optional_systemd_directives(text: str) -> str:
+@@ -2989,6 +2989,33 @@ def _strip_optional_systemd_directives(text: str) -> str:
      return "\n".join(filtered)
  
  
@@ -74,7 +87,7 @@ index ce60bfb2c..ad57b6ece 100644
  def _normalize_launchd_plist_for_comparison(text: str) -> str:
      """Normalize launchd plist text for staleness checks.
  
-@@ -2955,12 +2982,8 @@ def systemd_unit_is_current(system: bool = False) -> bool:
+@@ -3037,12 +3064,8 @@ def systemd_unit_is_current(system: bool = False) -> bool:
      # Normalize out directives that older systemd versions silently drop
      # (RestartMaxDelaySec, RestartSteps) so a unit that differs only by
      # those directives is not perpetually flagged as outdated.
@@ -90,10 +103,10 @@ index ce60bfb2c..ad57b6ece 100644
  
  
 diff --git a/hermes_cli/main.py b/hermes_cli/main.py
-index be6b7fce0..0320ab299 100644
+index fc30c53cd6..8d536e8f91 100644
 --- a/hermes_cli/main.py
 +++ b/hermes_cli/main.py
-@@ -1559,7 +1559,7 @@ to avoid false-positive reinstalls on every launch.
+@@ -1610,7 +1610,7 @@ to avoid false-positive reinstalls on every launch.
  
  
  def _workspace_root(dir: Path) -> Path:
@@ -102,7 +115,7 @@ index be6b7fce0..0320ab299 100644
  
      In a workspace checkout the single ``package-lock.json`` and hoisted
      ``node_modules/`` live at the workspace root (the parent of the
-@@ -1576,10 +1576,12 @@ def _workspace_root(dir: Path) -> Path:
+@@ -1627,10 +1627,12 @@ def _workspace_root(dir: Path) -> Path:
      sub-package lockfile (e.g. running ``npm install`` in the wrong
      directory).
      """
@@ -117,7 +130,7 @@ index be6b7fce0..0320ab299 100644
      ):
          return dir.parent
      return dir
-@@ -1647,6 +1649,14 @@ def _tui_need_npm_install(root: Path) -> bool:
+@@ -1698,6 +1700,14 @@ def _tui_need_npm_install(root: Path) -> bool:
      entry = root / "dist" / "entry.js"
      # With npm workspaces the lockfile lives at the workspace root.
      ws_root = _workspace_root(root)
@@ -132,50 +145,301 @@ index be6b7fce0..0320ab299 100644
      lock = ws_root / "package-lock.json"
      if entry.is_file() and not lock.is_file():
          return False
-@@ -4747,6 +4757,243 @@ def _capture_head_sha(git_cmd, cwd) -> str | None:
+@@ -5038,6 +5048,10 @@ def _clear_bytecode_cache(root: Path) -> int:
+ from hermes_cli.update_cmd import (  # noqa: F401
+     _add_upstream_remote,
+     _atomic_replace_dir,
++    _bun_lockfile_changed,
++    _bun_manifest_paths,
++    _bun_manifests_digest,
++    _capture_carried_commits,
+     _capture_head_sha,
+     _cmd_update_check,
+     _cmd_update_impl,
+@@ -5074,6 +5088,8 @@ from hermes_cli.update_cmd import (  # noqa: F401
+     _print_fts_optimize_available_notice,
+     _print_stash_cleanup_guidance,
+     _record_npm_lockfile_hash,
++    _record_bun_lockfile_hash,
++    _reconcile_carried_bun_lock,
+     _refresh_active_lazy_features,
+     _refresh_active_memory_provider_dependencies,
+     _refresh_windows_gateway_launchers,
+@@ -5081,6 +5097,7 @@ from hermes_cli.update_cmd import (  # noqa: F401
+     _resolve_pre_update_backup_mode,
+     _resolve_stash_selector,
+     _restore_stashed_changes,
++    _restore_carried_commits,
+     _resume_windows_gateways_after_update,
+     _run_logged_subprocess,
+     _run_pre_update_backup,
+@@ -5537,6 +5554,43 @@ def _run_npm_install_deterministic(
+     return _attempt(repaired_npm)
+ 
+ 
++def _run_bun_install_deterministic(
++    bun: str,
++    cwd: Path,
++    *,
++    filters: tuple[str, ...] = (),
++    capture_output: bool = True,
++    env: dict[str, str] | None = None,
++) -> subprocess.CompletedProcess:
++    """Install selected Bun workspaces without allowing lockfile drift."""
++    lockfile = cwd / "bun.lock"
++    command = [bun, "install", "--frozen-lockfile", "--no-progress", *filters]
++    if not lockfile.is_file():
++        return subprocess.CompletedProcess(
++            command,
++            1,
++            stdout="",
++            stderr=f"Missing Bun lockfile: {lockfile}",
++        )
++
++    run_env = {
++        **os.environ,
++        **(env or {}),
++        "CI": "1",
++        "DO_NOT_TRACK": "1",
++    }
++    return subprocess.run(
++        command,
++        cwd=cwd,
++        env=run_env,
++        capture_output=capture_output,
++        text=True,
++        encoding="utf-8",
++        errors="replace",
++        check=False,
++    )
++
++
+ def _run_npm_watching_for_engine_failure(
+     cmd: list[str],
+     *,
+@@ -5648,7 +5702,7 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
+ 
+ 
+ def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
+-    """Build the web UI frontend if npm is available.
++    """Build the web UI frontend with Bun when available, otherwise npm.
+ 
+     Args:
+         web_dir: Path to the dashboard frontend source directory.
+@@ -5677,13 +5731,19 @@ def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
+ 
+     from hermes_constants import with_hermes_node_path
+ 
+-    npm = _resolve_node_runtime_npm()
+-    if not npm:
++    bun = _resolve_bun_runtime()
++    npm = None if bun else _resolve_node_runtime_npm()
++    if not bun and not npm:
+         if fatal:
+-            _say("Web UI frontend not built and npm is not available.")
+-            _say("Install Node.js, then run:  cd web && npm install && npm run build")
++            _say("Web UI frontend not built and no JavaScript runtime is available.")
++            _say(
++                "Install Bun, then run: bun install --frozen-lockfile "
++                "--filter './apps/shared' --filter './web' && "
++                "bun run --bun --filter './web' build"
++            )
+         return not fatal
+     build_env = with_hermes_node_path()
++    build_env["DO_NOT_TRACK"] = "1"
+     _say("→ Building web UI...")
+ 
+     def _relay(result: "subprocess.CompletedProcess") -> None:
+@@ -5701,41 +5761,71 @@ def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
+             if text:
+                 _say(text)
+ 
+-    npm_cwd = _workspace_root(web_dir)
+-    # Scope the install to the web workspace only so that the full workspace
+-    # graph (including apps/desktop with its Electron + node-pty deps) is never
+-    # resolved here.  Without --workspace the root package.json's apps/* glob
+-    # would pull in desktop on every web build. See #38772.
+-    # When web/ has its own package-lock.json, _workspace_root() returns
+-    # web_dir itself and --workspace would fail.  See #42973.
+-    npm_workspace_args: tuple[str, ...] = () if npm_cwd == web_dir else ("--workspace", "web")
+-    if _is_termux_startup_environment():
+-        npm_cwd, npm_workspace_args = _termux_workspace_install_context(web_dir)
+-
+-    def _install_web_deps(*, silent: bool) -> "subprocess.CompletedProcess":
+-        return _run_npm_install_deterministic(
+-            npm,
+-            npm_cwd,
+-            extra_args=(*npm_workspace_args, "--silent") if silent else npm_workspace_args,
+-            env=build_env,
++    install_cwd = _workspace_root(web_dir)
++    if bun:
++        bun_filters: tuple[str, ...] = (
++            ()
++            if install_cwd == web_dir
++            else ("--filter", "./apps/shared", "--filter", "./web")
+         )
+ 
++        def _install_web_deps(*, silent: bool) -> "subprocess.CompletedProcess":
++            return _run_bun_install_deterministic(
++                bun,
++                install_cwd,
++                filters=bun_filters,
++                env=build_env,
++            )
++
++        install_label = "Bun install"
++        build_command = [bun, "run", "--bun", "build"]
++        manual_command = (
++            "bun install --frozen-lockfile --filter './apps/shared' "
++            "--filter './web' && "
++            "bun run --bun --filter './web' build"
++        )
++    else:
++        assert npm is not None
++        # Scope the install to the web workspace only so the full workspace
++        # graph (including apps/desktop) is never resolved here.
++        npm_workspace_args: tuple[str, ...] = (
++            () if install_cwd == web_dir else ("--workspace", "web")
++        )
++        if _is_termux_startup_environment():
++            install_cwd, npm_workspace_args = _termux_workspace_install_context(web_dir)
++
++        def _install_web_deps(*, silent: bool) -> "subprocess.CompletedProcess":
++            return _run_npm_install_deterministic(
++                npm,
++                install_cwd,
++                extra_args=(
++                    (*npm_workspace_args, "--silent")
++                    if silent
++                    else npm_workspace_args
++                ),
++                env=build_env,
++            )
++
++        install_label = "npm install"
++        build_command = [npm, "run", "build"]
++        manual_command = "npm install --workspace web && npm run build -w web"
++
+     r1 = _install_web_deps(silent=True)
+     if r1.returncode != 0:
+         _say(
+-            f"  {'✗' if fatal else '⚠'} Web UI npm install failed"
++            f"  {'✗' if fatal else '⚠'} Web UI {install_label} failed"
+             + ("" if fatal else " (hermes web will not be available)")
+         )
+         _relay(r1)
+         if fatal:
+-            _say("  Run manually:  npm install --workspace web && npm run build -w web")
++            _say(f"  Run manually:  {manual_command}")
+         return False
+     # First attempt — stream output via idle-timeout helper (issue #33788).
+     # capture_output=True on a long Vite build looks identical to a hang;
+     # users react by rebooting, which leaves the editable install in a
+     # half-state. Streaming + idle-kill makes failures observable AND
+     # recoverable (the stale-dist fallback below handles the kill path).
+-    r2 = _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir, env=build_env)
++    r2 = _run_with_idle_timeout(build_command, cwd=web_dir, env=build_env)
+     if r2.returncode != 0:
+         # The install above can exit 0 while leaving the tree without a build
+         # toolchain — a lockfile-hash skip over a half-installed tree, or an
+@@ -5746,13 +5836,13 @@ def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
+         if missing_tool:
+             _say(f"  ⚠ Build could not resolve {missing_tool} — reinstalling web dependencies...")
+             _install_web_deps(silent=False)
+-            r2 = _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir, env=build_env)
++            r2 = _run_with_idle_timeout(build_command, cwd=web_dir, env=build_env)
+         if r2.returncode != 0:
+             # Retry once after a short delay — covers boot-time races on Windows
+             # (antivirus scanning Node.js binaries, npm cache not ready, transient
+             # I/O when launched via Scheduled Task at logon). See issue #23817.
+             _time.sleep(3)
+-            r2 = _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir, env=build_env)
++            r2 = _run_with_idle_timeout(build_command, cwd=web_dir, env=build_env)
+ 
+     if r2.returncode != 0:
+         # _run_with_idle_timeout merges stderr into stdout; older callers
+@@ -5781,7 +5871,7 @@ def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
+         )
+         _relay(r2)
+         if fatal:
+-            _say("  Run manually:  npm install --workspace web && npm run build -w web")
++            _say(f"  Run manually:  {manual_command}")
+         return False
+     _say("  ✓ Web UI built")
+     project_root = web_dir.parent.parent if web_dir.parent.name == "apps" else web_dir.parent
+@@ -8829,6 +8919,23 @@ def _is_windows_npm_path(npm_path: str) -> bool:
+     )
+ 
+ 
++def _resolve_bun_runtime() -> str | None:
++    """Resolve a host-native Bun executable, preferring Sandwich's install."""
++    candidates = (
++        os.environ.get("BUN_BIN"),
++        str(Path.home() / ".bun" / "bin" / ("bun.exe" if _is_windows() else "bun")),
++    )
++    for candidate in candidates:
++        if not candidate:
++            continue
++        candidate_path = str(candidate)
++        if not _is_windows() and _is_windows_npm_path(candidate_path):
++            continue
++        if os.path.isfile(candidate_path) and os.access(candidate_path, os.X_OK):
++            return candidate_path
++    return None
++
++
+ def _resolve_node_runtime_npm() -> str | None:
+     """Resolve an npm executable that belongs to the host's Node runtime.
+ 
+diff --git a/hermes_cli/update_cmd.py b/hermes_cli/update_cmd.py
+index 95982c0f28..34736cbe74 100644
+--- a/hermes_cli/update_cmd.py
++++ b/hermes_cli/update_cmd.py
+@@ -27,6 +27,7 @@ import hashlib
+ import json
+ import logging
+ import os
++import re
+ import shlex
+ import shutil
+ import subprocess
+@@ -117,6 +118,213 @@ def _capture_head_sha(git_cmd, cwd) -> str | None:
+     except (subprocess.CalledProcessError, OSError):
          return None
  
- 
-+def _capture_carried_commits(git_cmd, cwd, remote_branch: str) -> list[str]:
-+    """Return local commits carried on top of the currently fetched branch.
 +
-+    Managed installs occasionally need a small local compatibility patch. An
-+    upstream update makes ``pull --ff-only`` diverge in that state, and the
-+    historical reset fallback discarded those commits. Capture only real object
-+    IDs before fetching moves the remote-tracking ref; mocked or malformed
-+    output is deliberately ignored.
-+    """
++def _capture_carried_commits(git_cmd, cwd, remote_branch: str) -> list[str]:
++    """Return real local commits carried above the last fetched upstream tip."""
 +    try:
 +        result = subprocess.run(
 +            git_cmd + ["rev-list", "--reverse", f"{remote_branch}..HEAD"],
 +            cwd=cwd,
 +            capture_output=True,
-+            text=True, encoding="utf-8", errors="replace",
++            text=True,
++            encoding="utf-8",
++            errors="replace",
 +        )
 +    except OSError:
 +        return []
 +    if result.returncode != 0:
 +        return []
-+    candidates = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-+    candidates = [
-+        commit
-+        for commit in candidates
-+        if re.fullmatch(r"[0-9a-fA-F]{40,64}", commit)
-+    ]
-+    carried = []
-+    for commit in candidates:
++
++    carried: list[str] = []
++    for candidate in result.stdout.splitlines():
++        commit = candidate.strip()
++        if not re.fullmatch(r"[0-9a-fA-F]{40,64}", commit):
++            continue
 +        parent_result = subprocess.run(
 +            git_cmd + ["rev-list", "--parents", "-n", "1", commit],
 +            cwd=cwd,
 +            capture_output=True,
-+            text=True, encoding="utf-8", errors="replace",
++            text=True,
++            encoding="utf-8",
++            errors="replace",
 +        )
-+        parent_fields = parent_result.stdout.strip().split()
-+        # When an earlier `update --check` has already moved origin/main past a
-+        # shallow boundary, rev-list sees the old upstream tip as an unrelated
-+        # root and includes it in origin/main..HEAD. It is the boundary, not a
-+        # carried patch. Real local commits have at least one visible parent.
-+        if parent_result.returncode == 0 and len(parent_fields) > 1:
++        # A shallow boundary appears as a parentless commit. It is not a local
++        # compatibility patch and must never be replayed.
++        if parent_result.returncode == 0 and len(parent_result.stdout.split()) > 1:
 +            carried.append(commit)
 +    return carried
 +
@@ -183,45 +447,44 @@ index be6b7fce0..0320ab299 100644
 +def _restore_carried_commits(
 +    git_cmd, cwd, commits: list[str], safety_ref: str
 +) -> tuple[bool, str | None]:
-+    """Cherry-pick captured local commits and remove their temporary safety ref."""
-+    if not commits:
-+        return True, None
-+
++    """Replay carried commits and retain the safety ref on a real conflict."""
 +    for commit in commits:
 +        result = subprocess.run(
 +            git_cmd + ["cherry-pick", commit],
 +            cwd=cwd,
 +            capture_output=True,
-+            text=True, encoding="utf-8", errors="replace",
++            text=True,
++            encoding="utf-8",
++            errors="replace",
 +        )
 +        if result.returncode == 0:
 +            continue
-+
-+        # A maintenance patch that has since landed upstream produces an empty
-+        # cherry-pick. With no unmerged entries it is safe to skip; a conflict
-+        # remains a hard stop and the safety ref keeps every original commit
-+        # reachable for manual resolution.
 +        unmerged = subprocess.run(
 +            git_cmd + ["diff", "--name-only", "--diff-filter=U"],
 +            cwd=cwd,
 +            capture_output=True,
-+            text=True, encoding="utf-8", errors="replace",
++            text=True,
++            encoding="utf-8",
++            errors="replace",
 +        )
 +        if not unmerged.stdout.strip():
 +            skipped = subprocess.run(
 +                git_cmd + ["cherry-pick", "--skip"],
 +                cwd=cwd,
 +                capture_output=True,
-+                text=True, encoding="utf-8", errors="replace",
++                text=True,
++                encoding="utf-8",
++                errors="replace",
 +            )
 +            if skipped.returncode == 0:
 +                continue
-+
 +        subprocess.run(
 +            git_cmd + ["cherry-pick", "--abort"],
 +            cwd=cwd,
 +            capture_output=True,
-+            text=True, encoding="utf-8", errors="replace",
++            text=True,
++            encoding="utf-8",
++            errors="replace",
 +        )
 +        detail = result.stderr.strip().splitlines()
 +        return False, detail[0] if detail else f"could not apply {commit[:10]}"
@@ -230,7 +493,9 @@ index be6b7fce0..0320ab299 100644
 +        git_cmd + ["update-ref", "-d", safety_ref],
 +        cwd=cwd,
 +        capture_output=True,
-+        text=True, encoding="utf-8", errors="replace",
++        text=True,
++        encoding="utf-8",
++        errors="replace",
 +    )
 +    return True, None
 +
@@ -238,31 +503,18 @@ index be6b7fce0..0320ab299 100644
 +def _reconcile_carried_bun_lock(
 +    git_cmd, cwd, commits: list[str]
 +) -> tuple[bool, str | None]:
-+    """Keep a carried Bun lock current without growing the local patch stack.
-+
-+    Hermes upstream does not currently commit a Bun lock.  A managed install
-+    carries one so normal workspace builds can stay frozen.  When upstream
-+    changes a workspace manifest, replaying that carried commit necessarily
-+    restores the previous lock.  Refresh only lock metadata with lifecycle
-+    scripts disabled, validate it under ``--frozen-lockfile``, then fold the
-+    result into the final carried commit.  The checkout therefore remains clean
-+    and future updates still carry the same number of local commits.
-+    """
++    """Refresh and amend only a stale carried Bun lock after replay."""
 +    if not commits:
 +        return True, None
 +    root = Path(cwd)
 +    lockfile = root / "bun.lock"
 +    if not lockfile.is_file():
 +        return False, "carried Bun profile is missing bun.lock"
-+    bun = _resolve_bun_runtime()
++    bun = _m()._resolve_bun_runtime()
 +    if not bun:
 +        return False, "carried Bun profile is active but Bun is unavailable"
 +
-+    run_env = {
-+        **os.environ,
-+        "CI": "1",
-+        "DO_NOT_TRACK": "1",
-+    }
++    run_env = {**os.environ, "CI": "1", "DO_NOT_TRACK": "1"}
 +    frozen_command = [
 +        bun,
 +        "install",
@@ -308,10 +560,10 @@ index be6b7fce0..0320ab299 100644
 +        errors="replace",
 +    )
 +    if refreshed.returncode != 0:
-+        detail = (refreshed.stderr or refreshed.stdout or "").strip()
++        error = (refreshed.stderr or refreshed.stdout or "").strip()
 +        return False, (
 +            "could not refresh carried bun.lock: "
-+            + (detail.splitlines()[0] if detail else "unknown Bun error")
++            + (error.splitlines()[0] if error else "unknown Bun error")
 +        )
 +
 +    verified = subprocess.run(
@@ -324,10 +576,10 @@ index be6b7fce0..0320ab299 100644
 +        errors="replace",
 +    )
 +    if verified.returncode != 0:
-+        detail = (verified.stderr or verified.stdout or "").strip()
++        error = (verified.stderr or verified.stdout or "").strip()
 +        return False, (
 +            "refreshed bun.lock did not pass frozen validation: "
-+            + (detail.splitlines()[0] if detail else "unknown Bun error")
++            + (error.splitlines()[0] if error else "unknown Bun error")
 +        )
 +
 +    changed = subprocess.run(
@@ -338,9 +590,7 @@ index be6b7fce0..0320ab299 100644
 +        encoding="utf-8",
 +        errors="replace",
 +    )
-+    changed_paths = {
-+        line.strip() for line in changed.stdout.splitlines() if line.strip()
-+    }
++    changed_paths = {line.strip() for line in changed.stdout.splitlines() if line.strip()}
 +    if not changed_paths:
 +        return True, None
 +    if changed.returncode != 0 or changed_paths != {"bun.lock"}:
@@ -349,15 +599,7 @@ index be6b7fce0..0320ab299 100644
 +            + ", ".join(sorted(changed_paths))
 +        )
 +
-+    staged = subprocess.run(
-+        git_cmd + ["add", "--", "bun.lock"],
-+        cwd=root,
-+        capture_output=True,
-+        text=True,
-+        encoding="utf-8",
-+        errors="replace",
-+    )
-+    if staged.returncode != 0:
++    if subprocess.run(git_cmd + ["add", "--", "bun.lock"], cwd=root).returncode != 0:
 +        return False, "could not stage refreshed bun.lock"
 +    amended = subprocess.run(
 +        git_cmd + ["commit", "--amend", "--no-edit", "--no-verify"],
@@ -372,214 +614,25 @@ index be6b7fce0..0320ab299 100644
 +    print("  ✓ Refreshed the carried Bun lock for current upstream manifests")
 +    return True, None
 +
-+
  def _validate_critical_files_syntax(root) -> tuple[bool, str | None, str | None]:
      """Compile each file in ``_UPDATE_CRITICAL_FILES`` to catch SyntaxErrors.
  
-@@ -5179,6 +5426,55 @@ def _run_npm_install_deterministic(
-     )
- 
- 
-+def _run_bun_install_deterministic(
-+    bun: str,
-+    cwd: Path,
-+    *,
-+    filters: tuple[str, ...] = (),
-+    capture_output: bool = True,
-+    env: dict[str, str] | None = None,
-+) -> subprocess.CompletedProcess:
-+    """Install a Bun workspace selection without allowing lockfile drift.
-+
-+    A committed ``bun.lock`` is mandatory.  Unlike the npm fallback above,
-+    this path never converts a failed frozen install into a mutable install:
-+    a manifest/lock mismatch is actionable update failure, not permission to
-+    silently select new dependency versions.
-+    """
-+    lockfile = cwd / "bun.lock"
-+    if not lockfile.is_file():
-+        return subprocess.CompletedProcess(
-+            [bun, "install", "--frozen-lockfile", *filters],
-+            1,
-+            stdout="",
-+            stderr=f"Missing Bun lockfile: {lockfile}",
-+        )
-+
-+    run_env = {
-+        **os.environ,
-+        **(env or {}),
-+        "CI": "1",
-+        "DO_NOT_TRACK": "1",
-+    }
-+    command = [
-+        bun,
-+        "install",
-+        "--frozen-lockfile",
-+        "--no-progress",
-+        *filters,
-+    ]
-+    return subprocess.run(
-+        command,
-+        cwd=cwd,
-+        env=run_env,
-+        capture_output=capture_output,
-+        text=True,
-+        encoding="utf-8",
-+        errors="replace",
-+        check=False,
-+    )
-+
-+
- def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
-     """Build the web UI frontend if npm is available, serializing across processes.
- 
-@@ -5223,7 +5519,7 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
- 
- 
- def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
--    """Build the web UI frontend if npm is available.
-+    """Build the web UI frontend with Bun when available, otherwise npm.
- 
-     Args:
-         web_dir: Path to the dashboard frontend source directory.
-@@ -5252,13 +5548,18 @@ def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
- 
-     from hermes_constants import with_hermes_node_path
- 
--    npm = _resolve_node_runtime_npm()
--    if not npm:
-+    bun = _resolve_bun_runtime()
-+    npm = None if bun else _resolve_node_runtime_npm()
-+    if not bun and not npm:
-         if fatal:
--            _say("Web UI frontend not built and npm is not available.")
--            _say("Install Node.js, then run:  cd web && npm install && npm run build")
-+            _say("Web UI frontend not built and no JavaScript runtime is available.")
-+            _say(
-+                "Install Bun, then run:  bun install --frozen-lockfile "
-+                "--filter './web' && bun run --bun --filter './web' build"
-+            )
-         return not fatal
-     build_env = with_hermes_node_path()
-+    build_env["DO_NOT_TRACK"] = "1"
-     _say("→ Building web UI...")
- 
-     def _relay(result: "subprocess.CompletedProcess") -> None:
-@@ -5276,43 +5577,68 @@ def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
-             if text:
-                 _say(text)
- 
--    npm_cwd = _workspace_root(web_dir)
--    # Scope the install to the web workspace only so that the full workspace
--    # graph (including apps/desktop with its Electron + node-pty deps) is never
--    # resolved here.  Without --workspace the root package.json's apps/* glob
--    # would pull in desktop on every web build. See #38772.
--    # When web/ has its own package-lock.json, _workspace_root() returns
--    # web_dir itself and --workspace would fail.  See #42973.
--    npm_workspace_args: tuple[str, ...] = () if npm_cwd == web_dir else ("--workspace", "web")
--    if _is_termux_startup_environment():
--        npm_cwd, npm_workspace_args = _termux_workspace_install_context(web_dir)
--    r1 = _run_npm_install_deterministic(
--        npm,
--        npm_cwd,
--        extra_args=(*npm_workspace_args, "--silent"),
--        env=build_env,
--    )
-+    if bun:
-+        install_cwd = _workspace_root(web_dir)
-+        bun_filters: tuple[str, ...] = (
-+            () if install_cwd == web_dir else ("--filter", "./web")
-+        )
-+        r1 = _run_bun_install_deterministic(
-+            bun,
-+            install_cwd,
-+            filters=bun_filters,
-+            env=build_env,
-+        )
-+        install_label = "Bun install"
-+        build_command = [bun, "run", "--bun", "build"]
-+        manual_command = (
-+            "bun install --frozen-lockfile --filter './web' && "
-+            "bun run --bun --filter './web' build"
-+        )
-+    else:
-+        assert npm is not None
-+        install_cwd = _workspace_root(web_dir)
-+        # Scope the install to the web workspace only so that the full workspace
-+        # graph (including apps/desktop with its Electron + node-pty deps) is never
-+        # resolved here.  Without --workspace the root package.json's apps/* glob
-+        # would pull in desktop on every web build. See #38772.
-+        # When web/ has its own package-lock.json, _workspace_root() returns
-+        # web_dir itself and --workspace would fail.  See #42973.
-+        npm_workspace_args: tuple[str, ...] = (
-+            () if install_cwd == web_dir else ("--workspace", "web")
-+        )
-+        if _is_termux_startup_environment():
-+            install_cwd, npm_workspace_args = _termux_workspace_install_context(web_dir)
-+        r1 = _run_npm_install_deterministic(
-+            npm,
-+            install_cwd,
-+            extra_args=(*npm_workspace_args, "--silent"),
-+            env=build_env,
-+        )
-+        install_label = "npm install"
-+        build_command = [npm, "run", "build"]
-+        manual_command = "npm install --workspace web && npm run build -w web"
-+
-     if r1.returncode != 0:
-         _say(
--            f"  {'✗' if fatal else '⚠'} Web UI npm install failed"
-+            f"  {'✗' if fatal else '⚠'} Web UI {install_label} failed"
-             + ("" if fatal else " (hermes web will not be available)")
-         )
-         _relay(r1)
-         if fatal:
--            _say("  Run manually:  npm install --workspace web && npm run build -w web")
-+            _say(f"  Run manually:  {manual_command}")
-         return False
-     # First attempt — stream output via idle-timeout helper (issue #33788).
-     # capture_output=True on a long Vite build looks identical to a hang;
-     # users react by rebooting, which leaves the editable install in a
-     # half-state. Streaming + idle-kill makes failures observable AND
-     # recoverable (the stale-dist fallback below handles the kill path).
--    r2 = _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir, env=build_env)
-+    r2 = _run_with_idle_timeout(build_command, cwd=web_dir, env=build_env)
-     if r2.returncode != 0:
-         # Retry once after a short delay — covers boot-time races on Windows
-         # (antivirus scanning Node.js binaries, npm cache not ready, transient
-         # I/O when launched via Scheduled Task at logon). See issue #23817.
-         _time.sleep(3)
--        r2 = _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir, env=build_env)
-+        r2 = _run_with_idle_timeout(build_command, cwd=web_dir, env=build_env)
- 
-     if r2.returncode != 0:
-         # _run_with_idle_timeout merges stderr into stdout; older callers
-@@ -5341,7 +5667,7 @@ def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
-         )
-         _relay(r2)
-         if fatal:
--            _say("  Run manually:  npm install --workspace web && npm run build -w web")
-+            _say(f"  Run manually:  {manual_command}")
-         return False
-     _say("  ✓ Web UI built")
-     project_root = web_dir.parent.parent if web_dir.parent.name == "apps" else web_dir.parent
-@@ -9674,6 +10000,67 @@ def _npm_manifest_paths() -> tuple[Path, ...]:
+@@ -1977,6 +2185,64 @@ def _npm_manifest_paths() -> tuple[Path, ...]:
+         pass
      return tuple(paths)
  
- 
-+def _bun_manifest_paths() -> tuple[Path, ...]:
-+    """Bun lockfile and manifests installed by ``hermes update``.
 +
-+    Desktop, JavaScript tests, and other optional workspaces are intentionally
-+    absent: the update path never installs them. Their own launch/test commands
-+    remain responsible for their dependency state.
-+    """
++def _bun_manifest_paths() -> tuple[Path, ...]:
++    """Bun lockfile and workspaces installed by ``hermes update``."""
 +    paths = [
-+        PROJECT_ROOT / "bun.lock",
-+        PROJECT_ROOT / "package.json",
-+        PROJECT_ROOT / "web" / "package.json",
-+        PROJECT_ROOT / "ui-tui" / "package.json",
++        _m().PROJECT_ROOT / "bun.lock",
++        _m().PROJECT_ROOT / "package.json",
++        _m().PROJECT_ROOT / "apps" / "shared" / "package.json",
++        _m().PROJECT_ROOT / "web" / "package.json",
++        _m().PROJECT_ROOT / "ui-tui" / "package.json",
 +    ]
-+    for match in sorted((PROJECT_ROOT / "ui-tui" / "packages").glob("*")):
++    packages = _m().PROJECT_ROOT / "ui-tui" / "packages"
++    for match in sorted(packages.glob("*")):
 +        manifest = match / "package.json"
 +        if manifest.is_file():
 +            paths.append(manifest)
@@ -587,25 +640,24 @@ index be6b7fce0..0320ab299 100644
 +
 +
 +def _bun_manifests_digest() -> str | None:
-+    """Combined sha256 over ``bun.lock`` and every workspace manifest."""
-+    if not (PROJECT_ROOT / "bun.lock").is_file():
++    if not (_m().PROJECT_ROOT / "bun.lock").is_file():
 +        return None
-+    h = hashlib.sha256()
++    digest = hashlib.sha256()
 +    for path in _bun_manifest_paths():
-+        h.update(str(path.relative_to(PROJECT_ROOT)).encode())
++        digest.update(str(path.relative_to(_m().PROJECT_ROOT)).encode())
 +        try:
-+            h.update(path.read_bytes())
++            digest.update(path.read_bytes())
 +        except OSError:
-+            h.update(b"<missing>")
-+    return h.hexdigest()
++            digest.update(b"<missing>")
++    return digest.hexdigest()
 +
 +
 +def _bun_lockfile_changed(hermes_root: Path) -> bool:
 +    current = _bun_manifests_digest()
-+    if current is None or not (PROJECT_ROOT / "node_modules").is_dir():
++    if current is None or not (_m().PROJECT_ROOT / "node_modules").is_dir():
 +        return True
 +    try:
-+        cache_key = hashlib.sha256(str(PROJECT_ROOT).encode()).hexdigest()[:12]
++        cache_key = hashlib.sha256(str(_m().PROJECT_ROOT).encode()).hexdigest()[:12]
 +        cache_file = hermes_root / f".bun_lock_hash_{cache_key}"
 +        return (
 +            not cache_file.is_file()
@@ -620,7 +672,7 @@ index be6b7fce0..0320ab299 100644
 +    if digest is None:
 +        return
 +    try:
-+        cache_key = hashlib.sha256(str(PROJECT_ROOT).encode()).hexdigest()[:12]
++        cache_key = hashlib.sha256(str(_m().PROJECT_ROOT).encode()).hexdigest()[:12]
 +        cache_file = hermes_root / f".bun_lock_hash_{cache_key}"
 +        cache_file.write_text(digest, encoding="utf-8")
 +    except OSError:
@@ -630,35 +682,11 @@ index be6b7fce0..0320ab299 100644
  def _npm_manifests_digest() -> str | None:
      """Combined sha256 over the lockfile + all workspace package.json files.
  
-@@ -9741,6 +10128,23 @@ def _is_windows_npm_path(npm_path: str) -> bool:
-     )
- 
- 
-+def _resolve_bun_runtime() -> str | None:
-+    """Resolve a host-native Bun executable, preferring the managed install."""
-+    candidates = (
-+        os.environ.get("BUN_BIN"),
-+        str(Path.home() / ".bun" / "bin" / ("bun.exe" if _is_windows() else "bun")),
-+    )
-+    for candidate in candidates:
-+        if not candidate:
-+            continue
-+        candidate_path = str(candidate)
-+        if not _is_windows() and _is_windows_npm_path(candidate_path):
-+            continue
-+        if os.path.isfile(candidate_path) and os.access(candidate_path, os.X_OK):
-+            return candidate_path
-+    return None
-+
-+
- def _resolve_node_runtime_npm() -> str | None:
-     """Resolve an npm executable that belongs to the host's Node runtime.
- 
-@@ -9789,6 +10193,52 @@ def _update_node_dependencies() -> list[str]:
-     if not (PROJECT_ROOT / "package.json").exists():
+@@ -2041,6 +2307,52 @@ def _update_node_dependencies() -> list[str]:
+     if not (_m().PROJECT_ROOT / "package.json").exists():
          return []
  
-+    bun = _resolve_bun_runtime()
++    bun = _m()._resolve_bun_runtime()
 +    if bun:
 +        from hermes_constants import get_default_hermes_root
 +
@@ -669,20 +697,20 @@ index be6b7fce0..0320ab299 100644
 +
 +        workspace_paths = tuple(
 +            workspace
-+            for workspace in ("ui-tui", "web")
-+            if (PROJECT_ROOT / workspace / "package.json").is_file()
++            for workspace in ("apps/shared", "ui-tui", "web")
++            if (_m().PROJECT_ROOT / workspace / "package.json").is_file()
 +        )
 +        filters: list[str] = ["--filter", "./"]
 +        for workspace in workspace_paths:
 +            filters.extend(["--filter", f"./{workspace}"])
 +
 +        print("→ Updating JavaScript dependencies with Bun...")
-+        result = _run_bun_install_deterministic(
++        result = _m()._run_bun_install_deterministic(
 +            bun,
-+            PROJECT_ROOT,
++            _m().PROJECT_ROOT,
 +            filters=tuple(filters),
 +            capture_output=False,
-+            env=_nixos_build_env(),
++            env=_m()._nixos_build_env(),
 +        )
 +        if result.returncode == 0:
 +            _record_bun_lockfile_hash(shared_hermes_root)
@@ -692,9 +720,9 @@ index be6b7fce0..0320ab299 100644
 +            return []
 +
 +        print("  ⚠ Bun dependency refresh failed")
-+        stderr = (result.stderr or "").strip() if result.stderr else ""
-+        if stderr:
-+            print(f"    {stderr.splitlines()[-1]}")
++        error = (result.stderr or "").strip()
++        if error:
++            print(f"    {error.splitlines()[-1]}")
 +        print()
 +        print("  ⚠ JavaScript dependency refresh did not complete cleanly; the")
 +        print("    installation may be in a mixed state (updated code, stale")
@@ -704,10 +732,10 @@ index be6b7fce0..0320ab299 100644
 +            labels.append(f"{', '.join(workspace_paths)} workspaces")
 +        return labels
 +
-     npm = _resolve_node_runtime_npm()
+     npm = _m()._resolve_node_runtime_npm()
      if not npm:
          # If the only npm reachable inside this WSL shell is the Windows one,
-@@ -10235,17 +10685,19 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
+@@ -2312,17 +2624,18 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
          sys.exit(1)
  
      if is_shallow:
@@ -715,47 +743,48 @@ index be6b7fce0..0320ab299 100644
 -        # report presence-only (mirrors the banner's _check_via_local_git).
 -        head_sha = subprocess.run(
 -            git_cmd + ["rev-parse", "HEAD"],
--            cwd=PROJECT_ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace",
+-            cwd=_m().PROJECT_ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace",
 -        ).stdout.strip()
 -        target_sha = subprocess.run(
 -            git_cmd + ["rev-parse", compare_branch],
--            cwd=PROJECT_ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace",
+-            cwd=_m().PROJECT_ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace",
 -        ).stdout.strip()
 -        if head_sha and target_sha and head_sha == target_sha:
-+        # A managed checkout may carry one or more local maintenance commits on
-+        # top of the fetched upstream tip. Direct SHA equality would incorrectly
-+        # advertise an update in that healthy state. The shallow boundary still
-+        # contains those local descendants, so ancestry is the reliable
-+        # presence-only check: current when the fetched tip is HEAD or an
-+        # ancestor of HEAD, update available otherwise.
++        # A managed checkout may carry a local compatibility commit above the
++        # shallow upstream tip. Ancestry, not direct SHA equality, determines
++        # whether that fetched tip is already present.
 +        ancestor_result = subprocess.run(
 +            git_cmd + ["merge-base", "--is-ancestor", compare_branch, "HEAD"],
-+            cwd=PROJECT_ROOT,
++            cwd=_m().PROJECT_ROOT,
 +            capture_output=True,
-+            text=True, encoding="utf-8", errors="replace",
++            text=True,
++            encoding="utf-8",
++            errors="replace",
 +        )
 +        if ancestor_result.returncode == 0:
              print("✓ Already up to date.")
          else:
              print(f"⚕ Update available (behind {compare_branch}).")
-@@ -11394,6 +11846,25 @@ def _cmd_update_impl(args, gateway_mode: bool):
+@@ -3734,6 +4047,27 @@ def _cmd_update_impl(args, gateway_mode: bool):
          # against.
-         branch = _resolve_update_branch(args)
+         branch = _m()._resolve_update_branch(args)
  
-+        # Capture committed local maintenance patches before fetch advances the
-+        # remote-tracking ref. They are replayed after the upstream fast-forward
-+        # (or divergence reset) below.
-+        pre_fetch_branch_result = subprocess.run(
++        # Capture committed local compatibility work before fetch advances the
++        # remote-tracking ref. The normal Hermes update remains the only public
++        # lifecycle; Sandwich's single carried commit is replayed internally.
++        branch_result = subprocess.run(
 +            git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
-+            cwd=PROJECT_ROOT,
++            cwd=_m().PROJECT_ROOT,
 +            capture_output=True,
-+            text=True, encoding="utf-8", errors="replace",
++            text=True,
++            encoding="utf-8",
++            errors="replace",
 +            check=True,
 +        )
-+        current_branch = pre_fetch_branch_result.stdout.strip()
++        current_branch = branch_result.stdout.strip()
 +        carried_commits = (
 +            _capture_carried_commits(
-+                git_cmd, PROJECT_ROOT, f"origin/{branch}"
++                git_cmd, _m().PROJECT_ROOT, f"origin/{branch}"
 +            )
 +            if current_branch == branch
 +            else []
@@ -764,14 +793,14 @@ index be6b7fce0..0320ab299 100644
          print("→ Fetching updates...")
          fetch_result = subprocess.run(
              git_cmd + ["fetch", "origin", branch],
-@@ -11418,16 +11889,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
+@@ -3758,16 +4092,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
                      print(f"  {stderr.splitlines()[0]}")
              sys.exit(1)
  
 -        # Get current branch (returns literal "HEAD" when detached)
 -        result = subprocess.run(
 -            git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
--            cwd=PROJECT_ROOT,
+-            cwd=_m().PROJECT_ROOT,
 -            capture_output=True,
 -            text=True, encoding="utf-8", errors="replace",
 -            check=True,
@@ -781,24 +810,25 @@ index be6b7fce0..0320ab299 100644
          # If user is on a different branch than the update target, switch
          # to the target. When the target is "main" this is the historical
          # "always update against main" behavior; for any other target it's
-@@ -11612,6 +12073,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
+@@ -3944,6 +4268,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
          # every user who ran ``hermes update`` for the 7 minutes between
          # the bad commit and the fix landing).
-         pre_pull_sha = _capture_head_sha(git_cmd, PROJECT_ROOT)
+         pre_pull_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
 +        carried_safety_ref = "refs/hermes-update/carried"
 +        if carried_commits and pre_pull_sha:
 +            subprocess.run(
-+                git_cmd
-+                + ["update-ref", carried_safety_ref, pre_pull_sha],
-+                cwd=PROJECT_ROOT,
++                git_cmd + ["update-ref", carried_safety_ref, pre_pull_sha],
++                cwd=_m().PROJECT_ROOT,
 +                capture_output=True,
-+                text=True, encoding="utf-8", errors="replace",
++                text=True,
++                encoding="utf-8",
++                errors="replace",
 +                check=True,
 +            )
          try:
-             pull_result = subprocess.run(
-                 git_cmd + ["pull", "--ff-only", "origin", branch],
-@@ -11641,6 +12112,39 @@ def _cmd_update_impl(args, gateway_mode: bool):
+             # Merge the ref we already fetched above (→ Fetching updates...)
+             # instead of `git pull`, which performs a SECOND network fetch of
+@@ -3979,6 +4314,39 @@ def _cmd_update_impl(args, gateway_mode: bool):
                      )
                      sys.exit(1)
  
@@ -809,7 +839,7 @@ index be6b7fce0..0320ab299 100644
 +                )
 +                restored, restore_error = _restore_carried_commits(
 +                    git_cmd,
-+                    PROJECT_ROOT,
++                    _m().PROJECT_ROOT,
 +                    carried_commits,
 +                    carried_safety_ref,
 +                )
@@ -826,7 +856,7 @@ index be6b7fce0..0320ab299 100644
 +
 +                lock_current, lock_error = _reconcile_carried_bun_lock(
 +                    git_cmd,
-+                    PROJECT_ROOT,
++                    _m().PROJECT_ROOT,
 +                    carried_commits,
 +                )
 +                if not lock_current:
@@ -839,7 +869,7 @@ index be6b7fce0..0320ab299 100644
              # parse before declaring the update successful. If a bad commit
              # made it through CI (e.g. admin-merge bypass of a failing
 diff --git a/package.json b/package.json
-index fe4bf346b..6c1208783 100644
+index 81a56b1b83..91efc58bad 100644
 --- a/package.json
 +++ b/package.json
 @@ -11,19 +11,14 @@
@@ -861,7 +891,7 @@ index fe4bf346b..6c1208783 100644
 -    "fix": "npm run --ws fix"
 +    "postinstall": "echo '✅ Hermes JavaScript workspaces ready.'",
 +    "install:root": "bun install --frozen-lockfile --filter './'",
-+    "install:web": "bun install --frozen-lockfile --filter './web'",
++    "install:web": "bun install --frozen-lockfile --filter './apps/shared' --filter './web'",
 +    "install:tui": "bun install --frozen-lockfile --filter './ui-tui'",
 +    "install:desktop": "bun install --frozen-lockfile --filter './apps/desktop'",
 +    "audit": "bun audit",
@@ -870,38 +900,17 @@ index fe4bf346b..6c1208783 100644
    },
    "repository": {
      "type": "git",
-@@ -35,8 +30,18 @@
-   },
-   "homepage": "https://github.com/NousResearch/Hermes-Agent#readme",
-   "dependencies": {
--    "@streamdown/math": "^1.0.2",
--    "agent-browser": "^0.26.0"
-+    "@streamdown/math": "^1.0.2"
-+  },
-+  "devDependencies": {
-+    "@eslint/js": "^9",
-+    "@typescript-eslint/eslint-plugin": "^8",
-+    "@typescript-eslint/parser": "^8",
-+    "eslint": "^9",
-+    "eslint-plugin-perfectionist": "^5",
-+    "eslint-plugin-react": "^7",
-+    "eslint-plugin-react-hooks": "^7",
-+    "eslint-plugin-unused-imports": "^4",
-+    "globals": "^16"
-   },
-   "overrides": {
-     "lodash": "4.18.1",
-@@ -44,5 +49,6 @@
-   },
-   "engines": {
-     "node": ">=20.0.0"
+@@ -65,5 +60,6 @@
+     "electron@40.10.2": true,
+     "fsevents@2.3.2": true,
+     "fsevents@2.3.3": true
 -  }
 +  },
 +  "packageManager": "bun@1.3.14"
  }
 diff --git a/skills/ctx-mode/DESCRIPTION.md b/skills/ctx-mode/DESCRIPTION.md
 new file mode 100644
-index 000000000..2c909292c
+index 0000000000..2c909292c6
 --- /dev/null
 +++ b/skills/ctx-mode/DESCRIPTION.md
 @@ -0,0 +1,3 @@
@@ -910,7 +919,7 @@ index 000000000..2c909292c
 +---
 diff --git a/skills/ctx-mode/context-mode/SKILL.md b/skills/ctx-mode/context-mode/SKILL.md
 new file mode 100644
-index 000000000..4560f954b
+index 0000000000..4560f954b3
 --- /dev/null
 +++ b/skills/ctx-mode/context-mode/SKILL.md
 @@ -0,0 +1,300 @@
@@ -1216,7 +1225,7 @@ index 000000000..4560f954b
 +- [Anti-Patterns & Common Mistakes](./references/anti-patterns.md)
 diff --git a/skills/ctx-mode/context-mode/references/anti-patterns.md b/skills/ctx-mode/context-mode/references/anti-patterns.md
 new file mode 100644
-index 000000000..89315da9a
+index 0000000000..89315da9ab
 --- /dev/null
 +++ b/skills/ctx-mode/context-mode/references/anti-patterns.md
 @@ -0,0 +1,283 @@
@@ -1505,7 +1514,7 @@ index 000000000..89315da9a
 +- [ ] Not loading a file into context that could be processed inside execute
 diff --git a/skills/ctx-mode/context-mode/references/patterns-javascript.md b/skills/ctx-mode/context-mode/references/patterns-javascript.md
 new file mode 100644
-index 000000000..f97bb7033
+index 0000000000..f97bb7033f
 --- /dev/null
 +++ b/skills/ctx-mode/context-mode/references/patterns-javascript.md
 @@ -0,0 +1,298 @@
@@ -1809,7 +1818,7 @@ index 000000000..f97bb7033
 +> timeout_ms: 60000
 diff --git a/skills/ctx-mode/context-mode/references/patterns-python.md b/skills/ctx-mode/context-mode/references/patterns-python.md
 new file mode 100644
-index 000000000..d5a209e7c
+index 0000000000..d5a209e7cf
 --- /dev/null
 +++ b/skills/ctx-mode/context-mode/references/patterns-python.md
 @@ -0,0 +1,304 @@
@@ -2119,7 +2128,7 @@ index 000000000..d5a209e7c
 +> summary_prompt: "List all duplicate files and suggest which copies to remove"
 diff --git a/skills/ctx-mode/context-mode/references/patterns-shell.md b/skills/ctx-mode/context-mode/references/patterns-shell.md
 new file mode 100644
-index 000000000..afb92298f
+index 0000000000..afb92298f3
 --- /dev/null
 +++ b/skills/ctx-mode/context-mode/references/patterns-shell.md
 @@ -0,0 +1,277 @@
@@ -2402,7 +2411,7 @@ index 000000000..afb92298f
 +> summary_prompt: "Report development velocity, active contributors, hotspot files, and cleanup opportunities"
 diff --git a/skills/ctx-mode/ctx-doctor/SKILL.md b/skills/ctx-mode/ctx-doctor/SKILL.md
 new file mode 100644
-index 000000000..3de47d740
+index 0000000000..3de47d7408
 --- /dev/null
 +++ b/skills/ctx-mode/ctx-doctor/SKILL.md
 @@ -0,0 +1,22 @@
@@ -2430,7 +2439,7 @@ index 000000000..3de47d740
 +   Re-display results verbatim with the same `[OK]`/`[FAIL]`/`[WARN]` prefixes.
 diff --git a/skills/ctx-mode/ctx-index/SKILL.md b/skills/ctx-mode/ctx-index/SKILL.md
 new file mode 100644
-index 000000000..8db0e5961
+index 0000000000..8db0e59616
 --- /dev/null
 +++ b/skills/ctx-mode/ctx-index/SKILL.md
 @@ -0,0 +1,46 @@
@@ -2482,7 +2491,7 @@ index 000000000..8db0e5961
 +- For broad repos, ask the user before raising `maxFiles` above 500.
 diff --git a/skills/ctx-mode/ctx-insight/SKILL.md b/skills/ctx-mode/ctx-insight/SKILL.md
 new file mode 100644
-index 000000000..4bd2aaadf
+index 0000000000..4bd2aaadfa
 --- /dev/null
 +++ b/skills/ctx-mode/ctx-insight/SKILL.md
 @@ -0,0 +1,24 @@
@@ -2512,7 +2521,7 @@ index 000000000..4bd2aaadf
 +   - If the browser did not open automatically, share the URL so they can open it manually.
 diff --git a/skills/ctx-mode/ctx-purge/SKILL.md b/skills/ctx-mode/ctx-purge/SKILL.md
 new file mode 100644
-index 000000000..a35a759b1
+index 0000000000..a35a759b11
 --- /dev/null
 +++ b/skills/ctx-mode/ctx-purge/SKILL.md
 @@ -0,0 +1,49 @@
@@ -2567,7 +2576,7 @@ index 000000000..a35a759b1
 +- There is no undo. Re-index content if you need it again.
 diff --git a/skills/ctx-mode/ctx-search/SKILL.md b/skills/ctx-mode/ctx-search/SKILL.md
 new file mode 100644
-index 000000000..59a5709d6
+index 0000000000..59a5709d64
 --- /dev/null
 +++ b/skills/ctx-mode/ctx-search/SKILL.md
 @@ -0,0 +1,35 @@
@@ -2608,7 +2617,7 @@ index 000000000..59a5709d6
 +6. If the index is empty, tell the user to run `/context-mode:ctx-index` or `context-mode index <path>` first.
 diff --git a/skills/ctx-mode/ctx-stats/SKILL.md b/skills/ctx-mode/ctx-stats/SKILL.md
 new file mode 100644
-index 000000000..1b10cdfcb
+index 0000000000..1b10cdfcb9
 --- /dev/null
 +++ b/skills/ctx-mode/ctx-stats/SKILL.md
 @@ -0,0 +1,26 @@
@@ -2640,7 +2649,7 @@ index 000000000..1b10cdfcb
 +- **`ctx_purge(confirm: true)`** — Permanently deletes all indexed content from the knowledge base. Use `/context-mode:ctx-purge` for this.
 diff --git a/skills/ctx-mode/ctx-upgrade/SKILL.md b/skills/ctx-mode/ctx-upgrade/SKILL.md
 new file mode 100644
-index 000000000..6ae025631
+index 0000000000..6ae025631e
 --- /dev/null
 +++ b/skills/ctx-mode/ctx-upgrade/SKILL.md
 @@ -0,0 +1,31 @@
@@ -2676,7 +2685,7 @@ index 000000000..6ae025631
 +   CLI="<PLUGIN_ROOT>/cli.bundle.mjs"; [ ! -f "$CLI" ] && CLI="<PLUGIN_ROOT>/build/cli.js"; node "$CLI" upgrade
 +   ```
 diff --git a/tests-js/package-json-lazy-deps.test.ts b/tests-js/package-json-lazy-deps.test.ts
-index d00491f6e..d30765973 100644
+index d00491f6e1..d307659731 100644
 --- a/tests-js/package-json-lazy-deps.test.ts
 +++ b/tests-js/package-json-lazy-deps.test.ts
 @@ -8,10 +8,10 @@
@@ -2716,370 +2725,11 @@ index d00491f6e..d30765973 100644
    )
  })
  
-diff --git a/tests/hermes_cli/test_banner.py b/tests/hermes_cli/test_banner.py
-index 1e15dc0e8..3d4756370 100644
---- a/tests/hermes_cli/test_banner.py
-+++ b/tests/hermes_cli/test_banner.py
-@@ -1,6 +1,7 @@
- """Tests for banner toolset name normalization and skin color usage."""
- 
- from unittest.mock import patch
-+import subprocess
- 
- from rich.console import Console
- 
-@@ -26,6 +27,30 @@ def test_display_toolset_name_handles_empty():
-     assert banner._display_toolset_name(None) == "unknown"
- 
- 
-+def test_shallow_update_check_accepts_carried_local_commit(tmp_path):
-+    """A local maintenance commit atop FETCH_HEAD must not show an update."""
-+
-+    values = {
-+        ("remote", "get-url", "origin"): "https://github.com/NousResearch/hermes-agent.git",
-+        ("rev-parse", "--is-shallow-repository"): "true",
-+        ("rev-parse", "FETCH_HEAD"): "upstream-tip",
-+    }
-+
-+    def fake_stdout(args, *, cwd):
-+        return values.get(tuple(args))
-+
-+    def fake_run(args, **kwargs):
-+        if "merge-base" in args:
-+            return subprocess.CompletedProcess(args, 0, stdout=b"", stderr=b"")
-+        return subprocess.CompletedProcess(args, 0, stdout=b"", stderr=b"")
-+
-+    with (
-+        patch.object(banner, "_git_stdout", side_effect=fake_stdout),
-+        patch.object(banner.subprocess, "run", side_effect=fake_run),
-+    ):
-+        assert banner._check_via_local_git(tmp_path) == 0
-+
-+
- def test_build_welcome_banner_uses_normalized_toolset_names():
-     """Unavailable toolsets should not have '_tools' appended in banner output."""
-     with (
-diff --git a/tests/hermes_cli/test_cmd_update.py b/tests/hermes_cli/test_cmd_update.py
-index 5a1914bc7..b2fa1b10d 100644
---- a/tests/hermes_cli/test_cmd_update.py
-+++ b/tests/hermes_cli/test_cmd_update.py
-@@ -7,7 +7,12 @@ from unittest.mock import patch
- 
- import pytest
- 
--from hermes_cli.main import cmd_update, PROJECT_ROOT
-+from hermes_cli.main import (
-+    PROJECT_ROOT,
-+    _capture_carried_commits,
-+    _restore_carried_commits,
-+    cmd_update,
-+)
- 
- 
- def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
-@@ -35,6 +40,90 @@ def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
-     return side_effect
- 
- 
-+def test_capture_carried_commits_filters_non_object_ids(tmp_path):
-+    valid = "a" * 40
-+    parent = "b" * 40
-+
-+    def side_effect(cmd, **kwargs):
-+        if "--parents" in cmd:
-+            return subprocess.CompletedProcess(
-+                cmd, 0, stdout=f"{valid} {parent}\n", stderr=""
-+            )
-+        return subprocess.CompletedProcess(
-+            cmd, 0, stdout=f"{valid}\nnot-a-sha\n", stderr=""
-+        )
-+
-+    with patch("subprocess.run", side_effect=side_effect):
-+        assert _capture_carried_commits(
-+            ["git"], tmp_path, "origin/main"
-+        ) == [valid]
-+
-+
-+def test_capture_carried_commits_excludes_old_shallow_boundary(tmp_path):
-+    boundary = "a" * 40
-+    local = "b" * 40
-+
-+    def side_effect(cmd, **kwargs):
-+        if "--parents" not in cmd:
-+            return subprocess.CompletedProcess(
-+                cmd, 0, stdout=f"{boundary}\n{local}\n", stderr=""
-+            )
-+        commit = cmd[-1]
-+        parents = boundary if commit == boundary else f"{local} {boundary}"
-+        return subprocess.CompletedProcess(cmd, 0, stdout=f"{parents}\n", stderr="")
-+
-+    with patch("subprocess.run", side_effect=side_effect):
-+        assert _capture_carried_commits(
-+            ["git"], tmp_path, "origin/main"
-+        ) == [local]
-+
-+
-+def test_restore_carried_commits_replays_and_drops_safety_ref(tmp_path):
-+    commits = ["a" * 40, "b" * 40]
-+
-+    def side_effect(cmd, **kwargs):
-+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-+
-+    with patch("subprocess.run", side_effect=side_effect) as mock_run:
-+        ok, detail = _restore_carried_commits(
-+            ["git"], tmp_path, commits, "refs/hermes-update/carried"
-+        )
-+
-+    assert ok is True
-+    assert detail is None
-+    commands = [" ".join(call.args[0]) for call in mock_run.call_args_list]
-+    assert f"git cherry-pick {commits[0]}" in commands
-+    assert f"git cherry-pick {commits[1]}" in commands
-+    assert "git update-ref -d refs/hermes-update/carried" in commands
-+
-+
-+def test_restore_carried_commits_keeps_safety_ref_on_conflict(tmp_path):
-+    commit = "a" * 40
-+
-+    def side_effect(cmd, **kwargs):
-+        joined = " ".join(cmd)
-+        if "cherry-pick " in joined and "--abort" not in joined:
-+            return subprocess.CompletedProcess(
-+                cmd, 1, stdout="", stderr="conflict while applying\n"
-+            )
-+        if "diff --name-only --diff-filter=U" in joined:
-+            return subprocess.CompletedProcess(
-+                cmd, 0, stdout="hermes_cli/main.py\n", stderr=""
-+            )
-+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-+
-+    with patch("subprocess.run", side_effect=side_effect) as mock_run:
-+        ok, detail = _restore_carried_commits(
-+            ["git"], tmp_path, [commit], "refs/hermes-update/carried"
-+        )
-+
-+    assert ok is False
-+    assert detail == "conflict while applying"
-+    commands = [" ".join(call.args[0]) for call in mock_run.call_args_list]
-+    assert "git cherry-pick --abort" in commands
-+    assert not any("update-ref -d" in command for command in commands)
-+
-+
- @pytest.fixture
- def mock_args():
-     return SimpleNamespace()
-@@ -67,7 +156,8 @@ def _patch_managed_uv(request):
- 
-     with patch("hermes_cli.managed_uv.resolve_uv", side_effect=_fake_resolve_uv), \
-          patch("hermes_cli.managed_uv.ensure_uv", side_effect=_fake_ensure_uv), \
--         patch("hermes_cli.managed_uv.update_managed_uv", side_effect=_fake_update_managed_uv):
-+         patch("hermes_cli.managed_uv.update_managed_uv", side_effect=_fake_update_managed_uv), \
-+         patch("hermes_cli.main._resolve_bun_runtime", return_value=None):
-         yield
- 
- 
-@@ -255,6 +345,142 @@ class TestCmdUpdateNpmLockfileCache:
-         assert cache_roots == [shared_root, shared_root]
- 
- 
-+class TestCmdUpdateBunDependencies:
-+    @staticmethod
-+    def _cache_file(hermes_root, project_root):
-+        cache_key = hashlib.sha256(str(project_root).encode()).hexdigest()[:12]
-+        return hermes_root / f".bun_lock_hash_{cache_key}"
-+
-+    def test_frozen_install_requires_committed_bun_lock(
-+        self, tmp_path, monkeypatch
-+    ):
-+        from hermes_cli import main as hm
-+
-+        called = False
-+
-+        def unexpected_run(*args, **kwargs):
-+            nonlocal called
-+            called = True
-+
-+        monkeypatch.setattr(hm.subprocess, "run", unexpected_run)
-+        result = hm._run_bun_install_deterministic(
-+            "/home/user/.bun/bin/bun",
-+            tmp_path,
-+            filters=("--filter", "./web"),
-+        )
-+
-+        assert result.returncode == 1
-+        assert "Missing Bun lockfile" in result.stderr
-+        assert called is False
-+
-+    def test_frozen_install_uses_filters_and_zero_telemetry(
-+        self, tmp_path, monkeypatch
-+    ):
-+        from hermes_cli import main as hm
-+
-+        (tmp_path / "bun.lock").write_text("lockfileVersion = 1\n")
-+        completed = subprocess.CompletedProcess([], 0, stdout="", stderr="")
-+        calls = []
-+
-+        def fake_run(command, **kwargs):
-+            calls.append((command, kwargs))
-+            return completed
-+
-+        monkeypatch.setattr(hm.subprocess, "run", fake_run)
-+        result = hm._run_bun_install_deterministic(
-+            "/home/user/.bun/bin/bun",
-+            tmp_path,
-+            filters=("--filter", "./", "--filter", "./web"),
-+            env={"PYTHON": "/nix/store/python"},
-+        )
-+
-+        assert result.returncode == 0
-+        command, kwargs = calls[0]
-+        assert command == [
-+            "/home/user/.bun/bin/bun",
-+            "install",
-+            "--frozen-lockfile",
-+            "--no-progress",
-+            "--filter",
-+            "./",
-+            "--filter",
-+            "./web",
-+        ]
-+        assert kwargs["cwd"] == tmp_path
-+        assert kwargs["env"]["CI"] == "1"
-+        assert kwargs["env"]["DO_NOT_TRACK"] == "1"
-+        assert kwargs["env"]["PYTHON"] == "/nix/store/python"
-+
-+    def test_update_selects_only_root_web_and_tui(self, tmp_path, monkeypatch):
-+        from hermes_cli import main as hm
-+        import hermes_constants
-+
-+        (tmp_path / "package.json").write_text("{}")
-+        (tmp_path / "bun.lock").write_text("lockfileVersion = 1\n")
-+        for workspace in ("web", "ui-tui", "apps/desktop"):
-+            path = tmp_path / workspace
-+            path.mkdir(parents=True)
-+            (path / "package.json").write_text("{}")
-+
-+        shared_root = tmp_path / ".hermes"
-+        shared_root.mkdir()
-+        observed = []
-+
-+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
-+        monkeypatch.setattr(
-+            hm, "_resolve_bun_runtime", lambda: "/home/user/.bun/bin/bun"
-+        )
-+        monkeypatch.setattr(hm, "_bun_lockfile_changed", lambda root: True)
-+        monkeypatch.setattr(
-+            hm,
-+            "_run_bun_install_deterministic",
-+            lambda *args, **kwargs: (
-+                observed.append((args, kwargs))
-+                or subprocess.CompletedProcess([], 0, stdout="", stderr="")
-+            ),
-+        )
-+        monkeypatch.setattr(hm, "_record_bun_lockfile_hash", lambda root: None)
-+        monkeypatch.setattr(
-+            hermes_constants, "get_default_hermes_root", lambda: shared_root
-+        )
-+
-+        assert hm._update_node_dependencies() == []
-+        assert len(observed) == 1
-+        _, kwargs = observed[0]
-+        assert kwargs["filters"] == (
-+            "--filter",
-+            "./",
-+            "--filter",
-+            "./ui-tui",
-+            "--filter",
-+            "./web",
-+        )
-+        assert "desktop" not in " ".join(kwargs["filters"])
-+
-+    def test_cache_ignores_desktop_manifest_changes(self, tmp_path, monkeypatch):
-+        from hermes_cli import main as hm
-+
-+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
-+        (tmp_path / "bun.lock").write_text("lockfileVersion = 1\n")
-+        (tmp_path / "package.json").write_text("{}")
-+        (tmp_path / "node_modules").mkdir()
-+        for workspace in ("web", "ui-tui", "apps/desktop"):
-+            path = tmp_path / workspace
-+            path.mkdir(parents=True)
-+            (path / "package.json").write_text("{}")
-+
-+        hm._record_bun_lockfile_hash(tmp_path)
-+        assert hm._bun_lockfile_changed(tmp_path) is False
-+
-+        (tmp_path / "apps" / "desktop" / "package.json").write_text(
-+            '{"devDependencies": {"electron": "latest"}}'
-+        )
-+        assert hm._bun_lockfile_changed(tmp_path) is False
-+
-+        (tmp_path / "web" / "package.json").write_text('{"name": "changed"}')
-+        assert hm._bun_lockfile_changed(tmp_path) is True
-+
-+
- class TestCmdUpdateTermuxUvBootstrap:
-     """Regression tests for Termux-specific uv bootstrap behavior."""
- 
-@@ -319,7 +545,7 @@ class TestCmdUpdateBranchFallback:
-         commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
- 
-         # rev-list should use origin/main, not origin/fix/stoicneko
--        rev_list_cmds = [c for c in commands if "rev-list" in c]
-+        rev_list_cmds = [c for c in commands if "rev-list" in c and "--count" in c]
-         assert len(rev_list_cmds) == 1
-         assert "origin/main" in rev_list_cmds[0]
-         assert "origin/fix/stoicneko" not in rev_list_cmds[0]
-@@ -342,7 +568,7 @@ class TestCmdUpdateBranchFallback:
- 
-         commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
- 
--        rev_list_cmds = [c for c in commands if "rev-list" in c]
-+        rev_list_cmds = [c for c in commands if "rev-list" in c and "--count" in c]
-         assert len(rev_list_cmds) == 1
-         assert "origin/main" in rev_list_cmds[0]
- 
-@@ -998,6 +1224,35 @@ class TestCmdUpdateCheckBranchFlag:
-         rev_list_cmds = [c for c in commands if "rev-list" in c]
-         assert any("upstream/main" in c for c in rev_list_cmds), rev_list_cmds
- 
-+    @patch("hermes_cli.config.detect_install_method", return_value="git")
-+    @patch("subprocess.run")
-+    def test_shallow_check_accepts_carried_local_commit(
-+        self, mock_run, _mock_method, capsys
-+    ):
-+        """A local maintenance commit atop the fetched tip is already current."""
-+
-+        def side_effect(cmd, **kwargs):
-+            joined = " ".join(str(c) for c in cmd)
-+            if "rev-parse --is-shallow-repository" in joined:
-+                return subprocess.CompletedProcess(cmd, 0, stdout="true\n", stderr="")
-+            if "rev-parse --verify" in joined or "fetch" in joined:
-+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-+            if "merge-base --is-ancestor" in joined:
-+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-+
-+        mock_run.side_effect = side_effect
-+        cmd_update(SimpleNamespace(check=True, branch=None))
-+
-+        out = capsys.readouterr().out
-+        assert "Already up to date." in out
-+        assert "Update available" not in out
-+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
-+        assert any(
-+            "merge-base --is-ancestor upstream/main HEAD" in command
-+            for command in commands
-+        )
-+
- 
- class TestCmdUpdateZipBranchRefusal:
-     """``hermes update --branch=<non-main>`` must refuse on the ZIP fallback path.
 diff --git a/tests/hermes_cli/test_systemd_optional_directives.py b/tests/hermes_cli/test_systemd_optional_directives.py
-index cbefa4f2e..e38bcb614 100644
+index c0d6d4c045..0a5a8ab426 100644
 --- a/tests/hermes_cli/test_systemd_optional_directives.py
 +++ b/tests/hermes_cli/test_systemd_optional_directives.py
-@@ -139,6 +139,54 @@ WantedBy=default.target
+@@ -98,6 +98,54 @@ WantedBy=default.target
  
  
  class TestSystemdUnitIsCurrent:
@@ -3134,82 +2784,8 @@ index cbefa4f2e..e38bcb614 100644
      def test_unit_without_fatal_config_restart_policy_is_not_current(
          self, tmp_path, monkeypatch,
      ):
-diff --git a/tests/hermes_cli/test_web_ui_build.py b/tests/hermes_cli/test_web_ui_build.py
-index 95c0960de..3f8f536ce 100644
---- a/tests/hermes_cli/test_web_ui_build.py
-+++ b/tests/hermes_cli/test_web_ui_build.py
-@@ -21,6 +21,7 @@ import pytest
- from hermes_cli.main import (
-     _web_ui_build_needed,
-     _build_web_ui,
-+    _run_bun_install_deterministic,
-     _run_npm_install_deterministic,
-     _compute_web_ui_content_hash,
-     _web_ui_stamp_path,
-@@ -32,6 +33,7 @@ from hermes_cli.main import (
- def _isolated_hermes_home(tmp_path, monkeypatch):
-     """Keep web-build-stamp writes inside the test's tmp dir, never the real home."""
-     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "_hermes_home"))
-+    monkeypatch.setattr("hermes_cli.main._resolve_bun_runtime", lambda: None)
- 
- 
- def _touch(path: Path, offset: float = 0.0) -> None:
-@@ -235,6 +237,53 @@ class TestBuildWebUISkipsWhenFresh:
-         assert mock_run.call_count == 1   # install only
-         assert mock_idle.call_count == 1  # build only
- 
-+    def test_prefers_frozen_bun_install_and_bun_runtime(self, tmp_path):
-+        web_dir, _ = _make_web_dir(tmp_path)
-+        (tmp_path / "bun.lock").write_text("lockfileVersion = 1\n")
-+
-+        Subprocess = __import__("subprocess")
-+        install_ok = Subprocess.CompletedProcess([], 0, stdout="", stderr="")
-+        build_ok = Subprocess.CompletedProcess([], 0, stdout="", stderr="")
-+        bun = "/home/user/.bun/bin/bun"
-+        with patch("hermes_cli.main._resolve_bun_runtime", return_value=bun), \
-+             patch("hermes_cli.main.subprocess.run", return_value=install_ok) as mock_run, \
-+             patch(
-+                 "hermes_cli.main._run_with_idle_timeout",
-+                 return_value=build_ok,
-+             ) as mock_idle:
-+            result = _build_web_ui(web_dir)
-+
-+        assert result is True
-+        install_args, install_kwargs = mock_run.call_args
-+        assert install_args[0] == [
-+            bun,
-+            "install",
-+            "--frozen-lockfile",
-+            "--no-progress",
-+            "--filter",
-+            "./web",
-+        ]
-+        assert install_kwargs["cwd"] == tmp_path
-+        assert install_kwargs["env"]["DO_NOT_TRACK"] == "1"
-+        build_args, build_kwargs = mock_idle.call_args
-+        assert build_args[0] == [bun, "run", "--bun", "build"]
-+        assert build_kwargs["cwd"] == web_dir
-+
-+    def test_bun_install_never_falls_back_to_mutable_lockfile(self, tmp_path):
-+        web_dir, _ = _make_web_dir(tmp_path)
-+        bun = "/home/user/.bun/bin/bun"
-+
-+        with patch("hermes_cli.main.subprocess.run") as mock_run:
-+            result = _run_bun_install_deterministic(
-+                bun,
-+                web_dir,
-+                filters=("--filter", "./web"),
-+            )
-+
-+        assert result.returncode == 1
-+        assert "Missing Bun lockfile" in result.stderr
-+        mock_run.assert_not_called()
-+
-     def test_npm_install_uses_utf8_replace_output_decoding(self, tmp_path):
-         web_dir, _ = _make_web_dir(tmp_path)
-         (web_dir / "package-lock.json").write_text("{}", encoding="utf-8")
 diff --git a/ui-tui/package.json b/ui-tui/package.json
-index 581d60142..a3b527bae 100644
+index 8965aadf15..16a19878ff 100644
 --- a/ui-tui/package.json
 +++ b/ui-tui/package.json
 @@ -4,23 +4,23 @@
@@ -3239,11 +2815,11 @@ index 581d60142..a3b527bae 100644
 -    "@hermes/shared": "file:../apps/shared",
 +    "@hermes/ink": "workspace:*",
 +    "@hermes/shared": "workspace:*",
-     "@nanostores/react": "^1.1.0",
-     "ink": "^6.8.0",
-     "ink-text-input": "^6.0.0",
+     "@nanostores/react": "1.1.0",
+     "ink-text-input": "6.0.0",
+     "nanostores": "1.4.0",
 diff --git a/ui-tui/packages/hermes-ink/package.json b/ui-tui/packages/hermes-ink/package.json
-index fdee08567..ac6422e39 100644
+index a7cdfbe518..51cebc5d47 100644
 --- a/ui-tui/packages/hermes-ink/package.json
 +++ b/ui-tui/packages/hermes-ink/package.json
 @@ -5,7 +5,7 @@
@@ -3256,7 +2832,7 @@ index fdee08567..ac6422e39 100644
      "lint": "echo 'ok!'",
      "fix": "echo 'nothing to fix'"
 diff --git a/ui-tui/src/__tests__/gatewayClient.test.ts b/ui-tui/src/__tests__/gatewayClient.test.ts
-index 2a2384b38..46a35642f 100644
+index 2a2384b38b..46a35642fa 100644
 --- a/ui-tui/src/__tests__/gatewayClient.test.ts
 +++ b/ui-tui/src/__tests__/gatewayClient.test.ts
 @@ -403,8 +403,19 @@ describe('GatewayClient websocket attach mode', () => {
@@ -3282,7 +2858,7 @@ index 2a2384b38..46a35642f 100644
      gw.kill()
    })
 diff --git a/ui-tui/src/gatewayClient.ts b/ui-tui/src/gatewayClient.ts
-index 122b5089d..e0dbc1619 100644
+index 122b5089de..e0dbc16193 100644
 --- a/ui-tui/src/gatewayClient.ts
 +++ b/ui-tui/src/gatewayClient.ts
 @@ -3,7 +3,6 @@ import { EventEmitter } from 'node:events'
@@ -3294,15 +2870,24 @@ index 122b5089d..e0dbc1619 100644
  
  import type { GatewayEvent } from './gatewayTypes.js'
 diff --git a/web/package.json b/web/package.json
-index fca8c3933..b5b24c8fe 100644
+index e4169ffe6b..5a8bcf368b 100644
 --- a/web/package.json
 +++ b/web/package.json
-@@ -15,7 +15,7 @@
-     "check": "npm run typecheck && npm run test && npm run lint"
+@@ -8,14 +8,14 @@
+     "build": "tsc -b && vite build",
+     "lint": "eslint .",
+     "lint:fix": "eslint . --fix",
+-    "fix": "npm run lint:fix",
++    "fix": "bun run lint:fix",
+     "preview": "vite preview",
+     "typecheck": "tsc -p . --noEmit",
+     "test": "vitest run",
+-    "check": "npm run typecheck && npm run test && npm run lint"
++    "check": "bun run typecheck && bun run test && bun run lint"
    },
    "dependencies": {
 -    "@hermes/shared": "file:../apps/shared",
 +    "@hermes/shared": "workspace:*",
      "@nous-research/ui": "0.18.2",
-     "@observablehq/plot": "^0.6.17",
-     "@react-three/fiber": "^9.6.0",
+     "@observablehq/plot": "0.6.17",
+     "@react-three/fiber": "9.6.1",

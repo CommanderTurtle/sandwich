@@ -25,6 +25,13 @@ the pinned Bun workspace and UI/TUI build integration. Upstream manifest
 changes refresh the carried lock with lifecycle scripts disabled, validate it
 frozen, and fold it into the same local compatibility commit. Run
 `./scripts/reconcile-hermes-runtime.sh` only for an explicit repair/build pass.
+No separate Git pull is part of the user workflow.
+
+```bash
+sandwich doctor  # verify Bun and every compatibility shim
+sandwich audit   # report foreign JavaScript runtimes without changing them
+hermes update    # the sole Hermes update command after one-time integration
+```
 
 Sandwich fails loudly when another package manager’s semantics cannot be
 represented honestly. Runtime state and backups never live in this repository.

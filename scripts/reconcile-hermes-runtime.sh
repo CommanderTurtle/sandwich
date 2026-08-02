@@ -19,7 +19,7 @@ bun="${BUN_INSTALL:-$HOME/.bun}/bin/bun"
     exit 1
 }
 grep -Fq 'def _reconcile_carried_bun_lock(' \
-    "$live/hermes_cli/main.py" || {
+    "$live/hermes_cli/update_cmd.py" || {
     printf 'Hermes does not have the current Sandwich update contract\n' >&2
     exit 1
 }
@@ -65,11 +65,14 @@ fi
 
 "$bun" install --frozen-lockfile --no-progress \
     --filter "./" \
+    --filter "./apps/shared" \
     --filter "./ui-tui" \
     --filter "./web"
 "$bun" run --bun --filter "./ui-tui" build
 "$bun" run --bun --filter "./web" build
-"$live/venv/bin/python" -m py_compile "$live/hermes_cli/main.py"
+"$live/venv/bin/python" -m py_compile \
+    "$live/hermes_cli/main.py" \
+    "$live/hermes_cli/update_cmd.py"
 "$root/bin/sandwich" doctor
 
 printf 'Hermes Bun workspaces are frozen, built, and current.\n'
