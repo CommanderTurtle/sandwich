@@ -60,6 +60,10 @@ case "${1:-doctor}" in
     audit)
         exec "$SANDWICH_ROOT/scripts/purge-foreign-runtimes.sh" --check
         ;;
+    checkExpr)
+        shift
+        exec "$SANDWICH_BIN" "$SANDWICH_ROOT/scripts/check-expr.ts" "$@"
+        ;;
     hermes)
         shift
         case "${1:-}" in
@@ -80,14 +84,16 @@ case "${1:-doctor}" in
         esac
         ;;
     version|--version|-v)
-        printf '%s\n' '0.5.0'
+        printf '%s\n' '0.6.0'
         ;;
     help|--help|-h)
         cat <<'EOF'
-usage: sandwich [doctor|audit|hermes|version|help]
+usage: sandwich [doctor|audit|checkExpr|hermes|version|help]
 
   sandwich doctor  verify Bun and every compatibility shim
   sandwich audit   report foreign JavaScript runtimes without changing them
+  sandwich checkExpr     audit Bun package roots, override vulnerabilities,
+                         and run bun update without running project builds
   sandwich hermes update  update pristine Hermes through the Bun shims
   sandwich hermes check   verify the official Hermes checkout is pristine
 
@@ -96,6 +102,6 @@ use `sandwich hermes update` as the complete update command.
 EOF
         ;;
     *)
-        bs_die "usage: sandwich [doctor|audit|hermes|version|help]"
+        bs_die "usage: sandwich [doctor|audit|checkExpr|hermes|version|help]"
         ;;
 esac

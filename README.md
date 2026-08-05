@@ -34,9 +34,19 @@ workflow.
 ```bash
 sandwich doctor  # verify Bun and every compatibility shim
 sandwich audit   # report foreign JavaScript runtimes without changing them
+sandwich checkExpr      # audit every Bun root, repair overrides, bun update
 sandwich hermes check   # verify Hermes is an unmodified upstream checkout
 sandwich hermes update  # back up, update, and rebuild Hermes through Bun
 ```
+
+`sandwich checkExpr` starts at `~/.bun/install/global`, finds each user-owned
+project with a Bun lockfile, and runs `bun audit`. Vulnerable packages are added
+to (or refreshed inside) that project's top-level `overrides` block before a
+normal `bun update`. Existing unrelated overrides are preserved. Sandwich does
+not invoke a project build or trust blocked dependency scripts; it reports the
+project's build hooks and tells you when `bun pm untrusted` needs review.
+Use `sandwich checkExpr --dryrun` to print the proposed overrides without
+changing manifests, locks, or installed modules.
 
 Sandwich fails loudly when another package manager’s semantics cannot be
 represented honestly. Runtime state and backups never live in this repository.
