@@ -4,6 +4,7 @@
 .state/
 .tmp/
 .sandbox/
+.windows-bin/
 node_modules/
 bun-error.log
 *.log

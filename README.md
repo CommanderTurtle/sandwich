@@ -19,6 +19,21 @@ Preview with `./install.sh --check`. Update Bun with
 `./install.sh --upgrade-bun`. Existing user shims and shell configuration are
 backed up under `~/.local/state/sandwich`.
 
+### Windows
+
+Install Bun and Git for Windows, then run the repository-local installer from
+PowerShell:
+
+```powershell
+.\windows.ps1
+sandwich doctor
+```
+
+The script creates small ignored `.cmd` launchers under `.windows-bin`, puts
+that directory first on the user PATH, and runs the canonical Sandwich Bash
+entrypoints through Git for Windows. It installs no Node runtime and updates
+the current PowerShell process immediately.
+
 Hermes support is external by design. Sandwich never patches, commits, rebases,
 or installs files into the official Hermes source tree. The wrapper runs the
 official updater with Sandwich first on `PATH`, so Hermes' native `node` and
