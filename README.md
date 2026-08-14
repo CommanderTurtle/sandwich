@@ -21,7 +21,7 @@ backed up under `~/.local/state/sandwich`.
 
 ### Windows
 
-Install Bun and Git for Windows, then run the repository-local installer from
+Run the repository installer from
 PowerShell:
 
 ```powershell
