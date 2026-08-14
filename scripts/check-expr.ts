@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 
-import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 
 type Advisory = {
   severity?: string;
@@ -44,26 +44,39 @@ function hasBunLock(root: string): boolean {
 }
 
 function scan(searchRoot: string): string[] {
-  const excludedNames = ["node_modules", ".git", ".cache", ".venv", "venv", "target", "dist", "build", "vendor"];
+  const excludedNames = new Set(["node_modules", ".git", ".cache", ".venv", "venv", "target", "dist", "build", "vendor"]);
   const excludedPaths = [join(home, ".local", "state"), join(home, ".local", "share"), join(home, ".bun", "install", "cache")];
-  const prune: string[] = ["(", "-type", "d", "("];
-  const exclusions = [
-    ...excludedNames.map((name) => ["-name", name]),
-    ...excludedPaths.map((path) => ["-path", path]),
-  ];
-  exclusions.forEach((parts, index) => {
-    if (index) prune.push("-o");
-    prune.push(...parts);
-  });
-  prune.push(")", "-prune", ")");
+  if (process.platform === "win32" && resolve(searchRoot) === resolve(home)) excludedNames.add("AppData");
 
-  const found = run(["find", searchRoot, ...prune, "-o", "-type", "f", "-name", "package.json", "-print0"], home);
-  if (found.exitCode !== 0) throw new Error(found.stderr.trim() || `could not scan ${searchRoot}`);
-  return found.stdout
-    .split("\0")
-    .filter(Boolean)
-    .map(dirname)
-    .filter(hasBunLock);
+  const normalize = (path: string) => process.platform === "win32" ? resolve(path).toLowerCase() : resolve(path);
+  const excluded = new Set(excludedPaths.map(normalize));
+  const roots = new Set<string>();
+  const pending = [resolve(searchRoot)];
+
+  while (pending.length) {
+    const directory = pending.pop()!;
+    let entries;
+    try {
+      entries = readdirSync(directory, { withFileTypes: true });
+    } catch (error) {
+      const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
+      if (["EACCES", "EPERM", "ENOENT"].includes(code)) continue;
+      throw error;
+    }
+
+    for (const entry of entries) {
+      const path = join(directory, entry.name);
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) {
+        if (excludedNames.has(entry.name) || excluded.has(normalize(path))) continue;
+        pending.push(path);
+      } else if (entry.isFile() && entry.name === "package.json" && hasBunLock(directory)) {
+        roots.add(directory);
+      }
+    }
+  }
+
+  return [...roots];
 }
 
 function rootsFor(paths: string[]): string[] {
