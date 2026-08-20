@@ -7,12 +7,30 @@ tested Bun translations. It supports workspaces, global installs, lifecycle
 trust, frozen lockfiles, and foreign package-lock projects without installing a
 second JavaScript runtime.
 
+When Bun does not expose Node's experimental
+`node:module.stripTypeScriptTypes`, Sandwich supplies its position-preserving
+strip mode through the pinned Amaro implementation used by Node itself. This
+lets Node-oriented loaders such as DeepSeek Harness import and strip erasable
+TypeScript without modifying their installed source. Sandwich does not pretend
+to provide worker isolation controls that Bun does not implement.
+
+For DeepSeek Harness, Sandwich also bridges the private-loader call used by
+its zero-root user-profile watcher. Ordinary module imports and profile-file
+refreshes work; Node module-job inspection and module hot reload remain
+explicitly unsupported rather than silently approximated.
+
 ```bash
 git clone https://github.com/CommanderTurtle/sandwich.git
 cd sandwich
 ./install.sh
 source ~/.bashrc
 sandwich doctor
+```
+
+For an existing global DeepSeek Harness install, the same shim is automatic:
+
+```bash
+dsh web --port 7001 --no-open
 ```
 
 Preview with `./install.sh --check`. Update Bun with

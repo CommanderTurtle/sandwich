@@ -46,6 +46,11 @@ if [[ "$mode" == check ]]; then
     else
         printf 'Bun is not installed at %s\n' "$bun"
     fi
+    if [[ -f "$root/node_modules/amaro/package.json" ]]; then
+        printf 'Amaro dependency is installed\n'
+    else
+        printf 'Amaro dependency is not installed (the apply path installs it)\n'
+    fi
     "$root/scripts/install-user.sh" --check
     if [[ "$with_hermes" -eq 1 ]]; then
         "$root/scripts/update-hermes.sh" --check
@@ -66,6 +71,11 @@ if [[ ! -x "$bun" ]]; then
 elif [[ "$upgrade_bun" -eq 1 ]]; then
     "$bun" upgrade --stable
 fi
+
+(
+    cd -- "$root"
+    "$bun" install --frozen-lockfile --ignore-scripts
+)
 
 "$root/scripts/install-user.sh" --apply
 if [[ "$purge_foreign" -eq 1 ]]; then

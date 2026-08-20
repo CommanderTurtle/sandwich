@@ -42,8 +42,11 @@ check "component manifest matches CLI version" \
     "$SANDWICH_BUN" -e '
         const root = process.env.SANDWICH_TEST_ROOT;
         const manifest = await Bun.file(`${root}/manifest.json`).json();
+        const packageManifest = await Bun.file(`${root}/package.json`).json();
         if (manifest.schema_version !== "sandwich.component.v1") process.exit(1);
         if (manifest.version !== Bun.spawnSync([`${root}/bin/sandwich`, "--version"]).stdout.toString().trim()) process.exit(1);
+        if (manifest.version !== packageManifest.version) process.exit(1);
+        if (packageManifest.dependencies.amaro !== "1.1.11") process.exit(1);
         if (manifest.operations.hermes_update.human_confirmation !== true) process.exit(1);
         if (manifest.operations.hermes_check.mutating !== false) process.exit(1);
         if (manifest.integrations.hermes.source_mutation !== false) process.exit(1);
@@ -69,6 +72,62 @@ check "node resolves generated base64 JavaScript data modules" \
     equals \
     "$(node --input-type=module -e 'const url = "data:text/javascript;base64,ZXhwb3J0IGNvbnN0IHZhbHVlPTQyOw=="; const loaded = await import(url); process.stdout.write(String(loaded.value));')" \
     "42"
+check "node:module supplies position-preserving TypeScript stripping" \
+    node --input-type=module -e '
+        import { createRequire, stripTypeScriptTypes } from "node:module";
+        const source = "const answer: number = 42;";
+        const stripped = stripTypeScriptTypes(source);
+        if (typeof createRequire !== "function") process.exit(1);
+        if (stripped.length !== source.length) process.exit(1);
+        if (stripped.includes(": number") || !stripped.includes("= 42;")) process.exit(1);
+    '
+check "node:module CommonJS default exposes TypeScript stripping" \
+    node -e '
+        const moduleApi = require("node:module");
+        if (typeof moduleApi.stripTypeScriptTypes !== "function") process.exit(1);
+        if (moduleApi.stripTypeScriptTypes("let value: string").includes(": string")) process.exit(1);
+    '
+check "node:module rejects TypeScript syntax that requires transformation" \
+    node --input-type=module -e '
+        import { stripTypeScriptTypes } from "node:module";
+        try {
+          stripTypeScriptTypes("enum Answer { Value = 42 }");
+          process.exit(1);
+        } catch (error) {
+          if (!String(error?.message).includes("not supported")) process.exit(1);
+        }
+    '
+check "node:module fails loudly for unimplemented transform mode" \
+    node --input-type=module -e '
+        import { stripTypeScriptTypes } from "node:module";
+        try {
+          stripTypeScriptTypes("enum Answer { Value = 42 }", { mode: "transform" });
+          process.exit(1);
+        } catch (error) {
+          if (!String(error?.message).includes("position-preserving strip mode only")) process.exit(1);
+        }
+    '
+check "node:module bridges DSH's zero-root profile watcher loader" \
+    node --input-type=module -e '
+        import { createRequire } from "node:module";
+        const addon = createRequire(import.meta.url)("node-addon-require-builtin");
+        const internal = addon.requireBuiltin("internal/modules/esm/loader");
+        const loader = internal.getOrInitializeCascadedLoader();
+        const loaded = await loader.import("node:path", import.meta.url, {});
+        if (typeof loaded.join !== "function") process.exit(1);
+        if (!(loader.loadCache instanceof Map)) process.exit(1);
+    '
+check "node:module loader bridge refuses private modules outside its contract" \
+    node --input-type=module -e '
+        import { createRequire } from "node:module";
+        const addon = createRequire(import.meta.url)("node-addon-require-builtin");
+        try {
+          addon.requireBuiltin("internal/not-supported");
+          process.exit(1);
+        } catch (error) {
+          if (!String(error?.message).includes("does not expose Node private module")) process.exit(1);
+        }
+    '
 
 fixture="$(mktemp -d)"
 trap 'rm -rf -- "$fixture"' EXIT

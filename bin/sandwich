@@ -13,6 +13,18 @@ doctor() {
         "$("$SANDWICH_BIN" --revision)"
     printf '  node API:  %s\n' \
         "$("$SANDWICH_BIN" -e 'process.stdout.write(process.version + " / Bun " + Bun.version)')"
+    if strip_probe="$("$SANDWICH_ROOT/bin/node" --input-type=module -e '
+        import { stripTypeScriptTypes } from "node:module";
+        const source = "const answer: number = 42;";
+        const output = stripTypeScriptTypes(source);
+        if (output.length !== source.length || output.includes(": number")) process.exit(1);
+        process.stdout.write("Amaro / position-preserving");
+    ')"; then
+        printf '  node TS:   %s\n' "$strip_probe"
+    else
+        printf '  node TS:   unavailable\n'
+        failures=$((failures + 1))
+    fi
     printf '  global:    %s\n' "$BUN_INSTALL_GLOBAL_DIR"
     printf '  globalbin: %s\n' "$BUN_INSTALL_BIN"
     printf '  telemetry: DO_NOT_TRACK=%s\n' "${DO_NOT_TRACK:-unset}"
@@ -84,7 +96,7 @@ case "${1:-doctor}" in
         esac
         ;;
     version|--version|-v)
-        printf '%s\n' '0.6.0'
+        printf '%s\n' '0.7.0'
         ;;
     help|--help|-h)
         cat <<'EOF'

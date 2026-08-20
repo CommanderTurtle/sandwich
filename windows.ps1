@@ -13,6 +13,16 @@ if (-not (Test-Path -LiteralPath $bash -PathType Leaf)) {
     throw "Git for Windows Bash was not found: $bash"
 }
 
+Push-Location $root
+try {
+    & $bun.Source install --frozen-lockfile --ignore-scripts
+    if ($LASTEXITCODE -ne 0) {
+        throw "Bun failed to install Sandwich's pinned compatibility dependency"
+    }
+} finally {
+    Pop-Location
+}
+
 function Convert-ToBashPath {
     param([Parameter(Mandatory)][string]$Path)
 

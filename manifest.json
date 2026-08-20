@@ -1,7 +1,7 @@
 {
   "schema_version": "sandwich.component.v1",
   "id": "sandwich",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "runtime": "bun",
   "install_scope": "user",
   "repository": "https://github.com/CommanderTurtle/sandwich.git",
@@ -53,6 +53,11 @@
     }
   },
   "integrations": {
+    "node_type_stripping": {
+      "mode": "position-preserving",
+      "implementation": "amaro@1.1.11",
+      "source_mutation": false
+    },
     "hermes": {
       "mode": "external-command-compatibility",
       "command": ["bin/sandwich", "hermes", "update"],
