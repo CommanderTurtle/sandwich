@@ -60,6 +60,12 @@ against a frozen compatibility lock under `~/.local/state/sandwich/hermes`.
 The lock is staged only for the Bun process and removed immediately, leaving no
 Bun lockfile or local compatibility commit in Hermes.
 
+Hermes build compatibility remains fail-closed. When Bun exposes stricter
+optional-peer types than npm's installed layout, Sandwich accepts only a known,
+version-scoped declaration mismatch, still type-checks the application, and
+runs the real upstream build. Any additional diagnostic fails normally; no
+tracked Hermes source is changed.
+
 `./install.sh --with-hermes` is an optional read-only verification of an
 existing official Hermes install. No separate Git pull is part of the user
 workflow.

@@ -50,6 +50,11 @@ bun="$BUN_INSTALL/bin/bun"
     exit 1
 }
 
+if [[ -f "$live/web/package.json" ]]; then
+    export SANDWICH_HERMES_WEB_BUILD_COMPAT=1
+    export SANDWICH_HERMES_WEB_DIR="$(cd -- "$live/web" && pwd -P)"
+fi
+
 print_status() {
     local changes
     changes="$(git -C "$live" status --porcelain --untracked-files=all)"
@@ -118,7 +123,7 @@ if ((${#workspace_args[@]})); then
         "${workspace_args[@]}"
 fi
 [[ -f ui-tui/package.json ]] && "$bun" run --bun --filter "./ui-tui" build
-[[ -f web/package.json ]] && "$bun" run --bun --filter "./web" build
+[[ -f web/package.json ]] && (cd web && "$root/bin/npm" run build)
 
 print_status
 "$root/bin/sandwich" doctor

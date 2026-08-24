@@ -187,6 +187,64 @@ check "npm run --prefix maps to Bun --cwd and keeps Bun runtime" \
     "$(cd "$fixture" && npm run runtime --prefix prefix-package)" \
     "$fixture/prefix-package:$("$SANDWICH_BUN" --version)"
 
+mkdir -p "$fixture/hermes-web"
+cat >"$fixture/hermes-web/package.json" <<'EOF'
+{
+  "name": "web",
+  "private": true,
+  "devDependencies": {
+    "@rolldown/plugin-babel": "0.2.3",
+    "@vitejs/plugin-react": "6.0.3"
+  }
+}
+EOF
+cat >"$fixture/hermes-web/vite.config.ts" <<'EOF'
+const preset = reactCompilerPreset();
+preset.rolldown.filter.code = /react/;
+EOF
+printf '{}\n' >"$fixture/hermes-web/tsconfig.app.json"
+printf '{}\n' >"$fixture/hermes-web/tsconfig.node.json"
+cat >"$fixture/fake-hermes-bun" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$SANDWICH_FAKE_BUN_LOG"
+if [[ "$*" == *"tsconfig.node.json"* ]]; then
+    if [[ "${SANDWICH_FAKE_UNEXPECTED:-0}" == "1" ]]; then
+        printf "vite.config.ts(12,3): error TS9999: unexpected diagnostic.\n"
+        exit 2
+    fi
+    printf "vite.config.ts(11,3): error TS18048: 'preset.rolldown.filter' is possibly 'undefined'.\n"
+    exit 2
+fi
+exit 0
+EOF
+chmod +x "$fixture/fake-hermes-bun"
+check "Hermes web build accepts only the known Bun-visible preset diagnostic" \
+    bash -c '
+        : >"$2"
+        cd "$1"
+        SANDWICH_BUN="$3" \
+        SANDWICH_FAKE_BUN_LOG="$2" \
+        SANDWICH_HERMES_WEB_BUILD_COMPAT=1 \
+        SANDWICH_HERMES_WEB_DIR="$1" \
+            "$4/bin/npm" run build >/dev/null 2>&1
+        grep -Fq "tsconfig.node.json" "$2" &&
+            grep -Fq "tsconfig.app.json" "$2" &&
+            grep -Fq "vite build" "$2"
+    ' _ "$fixture/hermes-web" "$fixture/hermes-build.log" \
+        "$fixture/fake-hermes-bun" "$root"
+check "Hermes web build rejects every unrecognized TypeScript diagnostic" \
+    bash -c '
+        : >"$2"
+        cd "$1"
+        ! SANDWICH_BUN="$3" \
+            SANDWICH_FAKE_BUN_LOG="$2" \
+            SANDWICH_FAKE_UNEXPECTED=1 \
+            SANDWICH_HERMES_WEB_BUILD_COMPAT=1 \
+            SANDWICH_HERMES_WEB_DIR="$1" \
+                "$4/bin/npm" run build >/dev/null 2>&1
+    ' _ "$fixture/hermes-web" "$fixture/hermes-build.log" \
+        "$fixture/fake-hermes-bun" "$root"
+
 cat >"$fixture/node-test.mjs" <<'EOF'
 import test from "node:test";
 import assert from "node:assert/strict";

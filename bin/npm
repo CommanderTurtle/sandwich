@@ -168,6 +168,23 @@ run_script() {
     local translated_run=()
     local run_cwd=""
     local value
+
+    # npm's hoisted workspace layout leaves @vitejs/plugin-react's optional
+    # @rolldown/plugin-babel peer outside the plugin's type-resolution path.
+    # Bun can resolve that peer, which exposes a stricter (and accurate)
+    # declaration for Hermes' React Compiler preset. Keep this exception
+    # opt-in to the official Hermes updater and the exact web workspace; all
+    # ordinary `npm run` calls retain their generic Bun translation.
+    if [[ "${SANDWICH_HERMES_WEB_BUILD_COMPAT:-0}" == "1" &&
+          "${1:-}" == "build" && $# -eq 1 &&
+          -n "${SANDWICH_HERMES_WEB_DIR:-}" ]]; then
+        local hermes_web_dir
+        hermes_web_dir="$(cd -- "$SANDWICH_HERMES_WEB_DIR" && pwd -P)"
+        if [[ "$PWD" == "$hermes_web_dir" ]]; then
+            exec "$SANDWICH_ROOT/scripts/build-hermes-web.sh" "$hermes_web_dir"
+        fi
+    fi
+
     while (($#)); do
         case "$1" in
             --prefix=*)
