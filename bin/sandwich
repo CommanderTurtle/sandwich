@@ -76,6 +76,14 @@ case "${1:-doctor}" in
         shift
         exec "$SANDWICH_BIN" "$SANDWICH_ROOT/scripts/check-expr.ts" "$@"
         ;;
+    checkFence)
+        shift
+        exec "$SANDWICH_BIN" "$SANDWICH_ROOT/scripts/check-fence.ts" "$@"
+        ;;
+    checkZoo)
+        shift
+        exec "$SANDWICH_BIN" "$SANDWICH_ROOT/scripts/check-zoo.ts" "$@"
+        ;;
     hermes)
         shift
         case "${1:-}" in
@@ -96,16 +104,20 @@ case "${1:-doctor}" in
         esac
         ;;
     version|--version|-v)
-        printf '%s\n' '0.7.0'
+        printf '%s\n' '0.8.0'
         ;;
     help|--help|-h)
         cat <<'EOF'
-usage: sandwich [doctor|audit|checkExpr|hermes|version|help]
+usage: sandwich [doctor|audit|checkExpr|checkFence|checkZoo|hermes|version|help]
 
   sandwich doctor  verify Bun and every compatibility shim
   sandwich audit   report foreign JavaScript runtimes without changing them
   sandwich checkExpr     audit Bun package roots, override vulnerabilities,
                          and run bun update without running project builds
+  sandwich checkFence    audit and update Cargo locks or tracked installations
+                         with an explicit dry-run/apply mode
+  sandwich checkZoo      audit and update uv projects, venvs, or tools with an
+                         explicit dry-run/apply mode and package protections
   sandwich hermes update  update pristine Hermes through the Bun shims
   sandwich hermes check   verify the official Hermes checkout is pristine
 
@@ -114,6 +126,6 @@ use `sandwich hermes update` as the complete update command.
 EOF
         ;;
     *)
-        bs_die "usage: sandwich [doctor|audit|checkExpr|hermes|version|help]"
+        bs_die "usage: sandwich [doctor|audit|checkExpr|checkFence|checkZoo|hermes|version|help]"
         ;;
 esac

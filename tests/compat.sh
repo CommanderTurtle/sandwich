@@ -51,6 +51,10 @@ check "component manifest matches CLI version" \
         if (manifest.operations.hermes_check.mutating !== false) process.exit(1);
         if (manifest.integrations.hermes.source_mutation !== false) process.exit(1);
         if (manifest.operations.audit.mutating !== false) process.exit(1);
+        if (manifest.operations.check_fence_preview.mutating !== false) process.exit(1);
+        if (manifest.operations.check_fence_apply.human_confirmation !== true) process.exit(1);
+        if (manifest.operations.check_zoo_preview.mutating !== false) process.exit(1);
+        if (manifest.operations.check_zoo_apply.human_confirmation !== true) process.exit(1);
     '
 check "node runtime is Bun" equals "$(node -p 'process.versions.bun')" "$("$SANDWICH_BUN" --version)"
 check "node eval" equals "$(node -e 'process.stdout.write(String(6 * 7))')" "42"
@@ -304,6 +308,209 @@ for retired in \
 done
 check "Hermes wrapper help is available" \
     contains "$(sandwich hermes help)" "never patched"
+
+check "checkZoo requires an explicit action" \
+    bash -c '! "$1/bin/sandwich" checkZoo >/dev/null 2>&1' _ "$root"
+check "checkFence requires an explicit action" \
+    bash -c '! "$1/bin/sandwich" checkFence >/dev/null 2>&1' _ "$root"
+
+zoo="$fixture/zoo"
+mkdir -p "$zoo/project/.venv/bin" "$zoo/standalone/bin" "$zoo/uv-tools/ruff/bin"
+cat >"$zoo/project/pyproject.toml" <<'EOF'
+[project]
+name = "zoo-project"
+version = "0.1.0"
+dependencies = ["safe", "vllm"]
+EOF
+cat >"$zoo/project/uv.lock" <<'EOF'
+version = 1
+
+[[package]]
+name = "safe"
+version = "1.0.0"
+
+[[package]]
+name = "vllm"
+version = "1.0.0"
+EOF
+for environment in "$zoo/project/.venv" "$zoo/standalone" "$zoo/uv-tools/ruff"; do
+    printf 'home = /fixture\n' >"$environment/pyvenv.cfg"
+    cat >"$environment/bin/activate" <<EOF
+VIRTUAL_ENV='$environment'
+export VIRTUAL_ENV
+deactivate() { unset VIRTUAL_ENV; }
+EOF
+    cat >"$environment/bin/python" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+    chmod +x "$environment/bin/python"
+done
+cat >"$zoo/fake-uv" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s | VIRTUAL_ENV=%s | CWD=%s\n' "$*" "${VIRTUAL_ENV:-}" "$PWD" >>"$SANDWICH_FAKE_UV_LOG"
+case "$*" in
+    "audit --locked --output-format json")
+        printf '%s\n' '{"summary":{"audited_packages":2,"vulnerabilities":0,"adverse_statuses":0},"vulnerabilities":[]}'
+        ;;
+    "tree --locked --outdated --format json")
+        printf '%s\n' '{"resolution":{"safe":{"name":"safe","version":"1.0.0","latest_version":"2.0.0"},"vllm":{"name":"vllm","version":"1.0.0","latest_version":"2.0.0"}}}'
+        ;;
+    lock*)
+        if [[ "${SANDWICH_FAKE_UV_DRIFT:-0}" == 1 ]]; then
+            sed -i 's/version = "1.0.0"/version = "9.0.0"/g' uv.lock
+        else
+            sed -i '0,/version = "1.0.0"/s//version = "2.0.0"/' uv.lock
+        fi
+        ;;
+    "sync --locked --inexact --active") ;;
+    pip\ check*) printf '%s\n' 'Checked 2 packages' ;;
+    *"pip list"*"--outdated"*)
+        printf '%s\n' '[{"name":"safe","version":"1.0.0","latest_version":"2.0.0"},{"name":"vllm","version":"1.0.0","latest_version":"2.0.0"}]'
+        ;;
+    *"pip list"*)
+        printf '%s\n' '[{"name":"safe","version":"1.0.0"},{"name":"vllm","version":"1.0.0"}]'
+        ;;
+    pip\ install*) ;;
+    "tool list") printf '%s\n' 'ruff v1.0.0' '  - ruff' ;;
+    "tool list --outdated --show-version-specifiers") printf '%s\n' 'ruff v1.0.0 (latest: v2.0.0)' ;;
+    "tool dir") printf '%s\n' "$SANDWICH_FAKE_UV_TOOLS" ;;
+    "tool audit --help") exit 2 ;;
+    tool\ upgrade*) ;;
+    *) printf 'unexpected fake uv command: %s\n' "$*" >&2; exit 91 ;;
+esac
+EOF
+chmod +x "$zoo/fake-uv"
+: >"$zoo/uv.log"
+check "checkZoo dry-run discovers projects and standalone venvs without writes" \
+    bash -c '
+        before=$(sha256sum "$2/project/uv.lock")
+        output=$(SANDWICH_UV="$2/fake-uv" SANDWICH_FAKE_UV_LOG="$2/uv.log" SANDWICH_FAKE_UV_TOOLS="$2/uv-tools" \
+            "$1/bin/sandwich" checkZoo --dryrun --protect vllm "$2")
+        after=$(sha256sum "$2/project/uv.lock")
+        [[ "$before" == "$after" ]] &&
+            [[ "$output" == *"[checkZoo:project]"* ]] &&
+            [[ "$output" == *"[checkZoo:venv]"* ]] &&
+            [[ "$output" == *"vllm: 1.0.0 -> 2.0.0 [protected]"* ]]
+    ' _ "$root" "$zoo"
+
+: >"$zoo/uv.log"
+check "checkZoo applies targeted project upgrades and activates only the existing project venv" \
+    bash -c '
+        SANDWICH_UV="$2/fake-uv" SANDWICH_FAKE_UV_LOG="$2/uv.log" SANDWICH_FAKE_UV_TOOLS="$2/uv-tools" \
+            "$1/bin/sandwich" checkZoo --apply=projects --protect vllm "$2/project" >/dev/null
+        grep -Fq "lock --upgrade-package safe" "$2/uv.log" &&
+            ! grep -Fq -- "--upgrade-package vllm" "$2/uv.log" &&
+            grep -F "sync --locked --inexact --active" "$2/uv.log" | grep -Fq "VIRTUAL_ENV=$2/project/.venv" &&
+            grep -A2 "name = \"vllm\"" "$2/project/uv.lock" | grep -Fq "version = \"1.0.0\""
+    ' _ "$root" "$zoo"
+
+sed -i '0,/version = "2.0.0"/s//version = "1.0.0"/' "$zoo/project/uv.lock"
+: >"$zoo/uv.log"
+check "checkZoo restores uv.lock when a protected package drifts" \
+    bash -c '
+        before=$(sha256sum "$2/project/uv.lock")
+        ! SANDWICH_UV="$2/fake-uv" SANDWICH_FAKE_UV_LOG="$2/uv.log" SANDWICH_FAKE_UV_TOOLS="$2/uv-tools" SANDWICH_FAKE_UV_DRIFT=1 \
+            "$1/bin/sandwich" checkZoo --apply=projects --protect vllm "$2/project" >/dev/null 2>&1
+        after=$(sha256sum "$2/project/uv.lock")
+        [[ "$before" == "$after" ]]
+    ' _ "$root" "$zoo"
+
+: >"$zoo/uv.log"
+check "checkZoo standalone venv mode uses uv pip preflight inside an activated subshell" \
+    bash -c '
+        SANDWICH_UV="$2/fake-uv" SANDWICH_FAKE_UV_LOG="$2/uv.log" SANDWICH_FAKE_UV_TOOLS="$2/uv-tools" \
+            "$1/bin/sandwich" checkZoo --apply=venvs --protect vllm "$2/standalone" >/dev/null
+        grep -F "pip install" "$2/uv.log" | grep -Fq -- "--dry-run" &&
+            grep -F "pip install" "$2/uv.log" | grep -Fq "VIRTUAL_ENV=$2/standalone" &&
+            ! grep -Eq "Bun\\.which\\(\"pip\"|\\[\"pip\"" "$1/scripts/check-zoo.ts"
+    ' _ "$root" "$zoo"
+
+fence="$fixture/fence"
+mkdir -p "$fence/project" "$fence/cargo-home/bin"
+cat >"$fence/project/Cargo.toml" <<'EOF'
+[package]
+name = "fence-project"
+version = "0.1.0"
+edition = "2024"
+EOF
+printf 'version = 4\n# original\n' >"$fence/project/Cargo.lock"
+cat >"$fence/cargo-home/.crates2.json" <<'EOF'
+{"installs":{"iwe 1.0.0 (registry+https://github.com/rust-lang/crates.io-index)":{"version_req":null,"bins":["iwe"],"features":["fast"],"all_features":false,"no_default_features":false,"profile":"release","target":"x86_64-unknown-linux-gnu"}}}
+EOF
+cat >"$fence/cargo-home/bin/iwe" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$fence/cargo-home/bin/iwe"
+cat >"$fence/fake-cargo" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s | CWD=%s\n' "$*" "$PWD" >>"$SANDWICH_FAKE_CARGO_LOG"
+case "$*" in
+    "audit --version")
+        [[ "${SANDWICH_FAKE_NO_AUDIT:-0}" != 1 ]] || exit 2
+        printf '%s\n' 'cargo-audit 1.0.0'
+        ;;
+    "audit --help") printf '%s\n' 'Audit Cargo.lock files' ;;
+    "audit --json") printf '%s\n' '{"vulnerabilities":{"found":false,"count":0,"list":[]},"warnings":{}}' ;;
+    "update --dry-run") printf '%s\n' 'update plan' ;;
+    "update") printf 'version = 4\n# updated\n' >Cargo.lock ;;
+    "metadata --locked --format-version 1 --no-deps")
+        [[ "${SANDWICH_FAKE_METADATA_FAIL:-0}" != 1 ]] || exit 2
+        printf '%s\n' '{}'
+        ;;
+    search\ *) printf '%s\n' 'iwe = "2.0.0" # fixture' ;;
+    install\ *) ;;
+    *) printf 'unexpected fake cargo command: %s\n' "$*" >&2; exit 92 ;;
+esac
+EOF
+chmod +x "$fence/fake-cargo"
+: >"$fence/cargo.log"
+check "checkFence dry-run audits and plans without changing Cargo.lock" \
+    bash -c '
+        before=$(sha256sum "$2/project/Cargo.lock")
+        SANDWICH_CARGO="$2/fake-cargo" SANDWICH_FAKE_CARGO_LOG="$2/cargo.log" CARGO_HOME="$2/cargo-home" \
+            "$1/bin/sandwich" checkFence --dryrun --scope=projects "$2/project" >/dev/null
+        after=$(sha256sum "$2/project/Cargo.lock")
+        [[ "$before" == "$after" ]] && grep -Fq "update --dry-run" "$2/cargo.log"
+    ' _ "$root" "$fence"
+
+: >"$fence/cargo.log"
+check "checkFence applies and validates a Cargo.lock update without building" \
+    bash -c '
+        SANDWICH_CARGO="$2/fake-cargo" SANDWICH_FAKE_CARGO_LOG="$2/cargo.log" CARGO_HOME="$2/cargo-home" \
+            "$1/bin/sandwich" checkFence --apply=projects "$2/project" >/dev/null
+        grep -Fq "# updated" "$2/project/Cargo.lock" &&
+            grep -Fq "metadata --locked --format-version 1 --no-deps" "$2/cargo.log" &&
+            ! grep -Eq "(^| )check( |$)|(^| )build( |$)" "$2/cargo.log"
+    ' _ "$root" "$fence"
+
+printf 'version = 4\n# original\n' >"$fence/project/Cargo.lock"
+: >"$fence/cargo.log"
+check "checkFence restores Cargo.lock when metadata validation fails" \
+    bash -c '
+        before=$(sha256sum "$2/project/Cargo.lock")
+        ! SANDWICH_CARGO="$2/fake-cargo" SANDWICH_FAKE_CARGO_LOG="$2/cargo.log" SANDWICH_FAKE_METADATA_FAIL=1 CARGO_HOME="$2/cargo-home" \
+            "$1/bin/sandwich" checkFence --apply=projects "$2/project" >/dev/null 2>&1
+        after=$(sha256sum "$2/project/Cargo.lock")
+        [[ "$before" == "$after" ]]
+    ' _ "$root" "$fence"
+
+: >"$fence/cargo.log"
+check "checkFence reconstructs tracked crates.io installs from Cargo metadata" \
+    bash -c '
+        SANDWICH_CARGO="$2/fake-cargo" SANDWICH_FAKE_CARGO_LOG="$2/cargo.log" CARGO_HOME="$2/cargo-home" \
+            "$1/bin/sandwich" checkFence --apply=global >/dev/null
+        grep -Fq "install --locked iwe --bin iwe --features fast --target x86_64-unknown-linux-gnu" "$2/cargo.log"
+    ' _ "$root" "$fence"
+
+check "checkFence fails closed when RustSec is unavailable" \
+    bash -c '
+        ! SANDWICH_CARGO="$2/fake-cargo" SANDWICH_FAKE_CARGO_LOG="$2/cargo.log" SANDWICH_FAKE_NO_AUDIT=1 CARGO_HOME="$2/cargo-home" \
+            "$1/bin/sandwich" checkFence --dryrun --scope=projects "$2/project" >/dev/null 2>&1
+    ' _ "$root" "$fence"
 
 check "npm root-only workspace install maps to the root filter" \
     bash -c 'cd "$1" && npm install --workspaces=false --no-save >/dev/null' _ "$fixture"

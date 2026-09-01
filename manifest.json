@@ -1,7 +1,7 @@
 {
   "schema_version": "sandwich.component.v1",
   "id": "sandwich",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "runtime": "bun",
   "install_scope": "user",
   "repository": "https://github.com/CommanderTurtle/sandwich.git",
@@ -29,6 +29,26 @@
       "argv": ["bin/sandwich", "checkExpr"],
       "mutating": true,
       "human_confirmation": false
+    },
+    "check_fence_preview": {
+      "argv": ["bin/sandwich", "checkFence", "--dryrun"],
+      "mutating": false,
+      "human_confirmation": false
+    },
+    "check_fence_apply": {
+      "argv": ["bin/sandwich", "checkFence", "--apply=projects"],
+      "mutating": true,
+      "human_confirmation": true
+    },
+    "check_zoo_preview": {
+      "argv": ["bin/sandwich", "checkZoo", "--dryrun"],
+      "mutating": false,
+      "human_confirmation": false
+    },
+    "check_zoo_apply": {
+      "argv": ["bin/sandwich", "checkZoo", "--apply=projects"],
+      "mutating": true,
+      "human_confirmation": true
     },
     "install_preview": {
       "argv": ["scripts/install-user.sh", "--check"],

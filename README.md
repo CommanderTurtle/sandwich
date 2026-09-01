@@ -74,6 +74,8 @@ workflow.
 sandwich doctor  # verify Bun and every compatibility shim
 sandwich audit   # report foreign JavaScript runtimes without changing them
 sandwich checkExpr      # audit every Bun root, repair overrides, bun update
+sandwich checkFence --dryrun  # audit Cargo projects and installed binaries
+sandwich checkZoo --dryrun    # audit uv projects, venvs, and installed tools
 sandwich hermes check   # verify Hermes is an unmodified upstream checkout
 sandwich hermes update  # back up, update, and rebuild Hermes through Bun
 ```
@@ -86,6 +88,75 @@ not invoke a project build or trust blocked dependency scripts; it reports the
 project's build hooks and tells you when `bun pm untrusted` needs review.
 Use `sandwich checkExpr --dryrun` to print the proposed overrides without
 changing manifests, locks, or installed modules.
+
+### Cargo maintenance
+
+`sandwich checkFence` walks user-owned Cargo roots containing both
+`Cargo.toml` and `Cargo.lock`. It runs the RustSec auditor and Cargo's native
+`cargo update --dry-run`; it does not compile a project or edit
+`Cargo.toml`. Install RustSec once if it is not already available:
+
+```bash
+cargo install --locked cargo-audit
+sandwich checkFence --dryrun
+sandwich checkFence --apply=projects
+```
+
+The global scope reads Cargo's own tracked-install metadata. It can recreate a
+crates.io installation with the original feature set, selected binaries,
+profile, target, version requirement, and packaged lockfile. Git, path, and
+custom-registry installations are reported but never guessed.
+
+```bash
+sandwich checkFence --dryrun --scope=global
+sandwich checkFence --apply=global
+sandwich checkFence --apply=global --protect iwe
+```
+
+All mutations require `--apply=projects`, `--apply=global`, or `--apply=all`.
+Cargo lockfiles are backed up before resolution and restored if update or
+metadata validation fails. Manifest-level RustSec findings remain explicit;
+Sandwich does not invoke the experimental manifest rewriter.
+
+### Python maintenance
+
+`sandwich checkZoo` discovers uv-locked projects and standalone virtual
+environments, then checks uv-managed command-line tools. Locked projects use
+native `uv audit`; standalone environments use `uv pip check` and
+`uv pip list --outdated`. The latter cannot be represented honestly as a
+lockfile security audit, so the distinction remains visible in the output.
+
+```bash
+sandwich checkZoo --dryrun
+sandwich checkZoo --dryrun --scope=projects ~/Hermes
+sandwich checkZoo --apply=projects --protect vllm,torch
+sandwich checkZoo --apply=venvs --protect-file ~/.config/sandwich/python-protected.txt ~/multimedia
+sandwich checkZoo --apply=tools
+```
+
+Project changes use targeted `uv lock --upgrade-package` operations. Existing
+`.venv` directories are activated in isolated subshells, synchronized with the
+new lock, and deactivated before the walker continues. A missing project
+environment is never created implicitly. Standalone venv updates run a uv
+resolution preflight before `uv pip install`; uv tools are upgraded one at a
+time so protected names can be honored. Sandwich never invokes `pip`, selects
+`--system`, or mutates a distro Python installation.
+
+Protected names may be repeated with `--protect`, listed comma-separated, read
+from `--protect-file`, or supplied through `SANDWICH_ZOO_PROTECT`. If present,
+`~/.config/sandwich/python-protected.txt` is loaded automatically; set
+`SANDWICH_ZOO_PROTECT_FILE` to choose another persistent list. Names use
+Python's normalized `-`, `_`, and `.` equivalence. A protected version change
+during project resolution aborts the operation and restores the original
+`uv.lock`. Every write requires `--apply=projects`, `--apply=venvs`,
+`--apply=tools`, or `--apply=all`; a bare `checkZoo` is rejected.
+
+The lock and audit behavior follows the upstream [uv locking and
+syncing](https://docs.astral.sh/uv/concepts/projects/sync/), [uv tool
+management](https://docs.astral.sh/uv/concepts/tools/), [Cargo
+update](https://doc.rust-lang.org/cargo/commands/cargo-update.html), and
+[RustSec cargo-audit](https://github.com/RustSec/rustsec/tree/main/cargo-audit)
+contracts.
 
 Sandwich fails loudly when another package manager’s semantics cannot be
 represented honestly. Runtime state and backups never live in this repository.

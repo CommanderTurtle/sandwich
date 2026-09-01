@@ -1,7 +1,7 @@
 ---
 name: sandwich-runtime
 description: Operate and maintain a Bun-only JavaScript environment through Sandwich's compatibility commands.
-version: 1.1.0
+version: 1.2.0
 metadata:
   hermes:
     tags: [bun, javascript, runtime, compatibility, sandwich]
@@ -44,6 +44,18 @@ runtimes or package managers.
 - `./install.sh --with-hermes` only verifies an existing Hermes installation;
   it does not modify Hermes.
 - Finish by running `sandwich doctor` and the repository's own checks.
+
+## Cross-ecosystem checks
+
+- Preview Cargo project and tracked-binary maintenance with
+  `sandwich checkFence --dryrun`. Apply only with an explicit
+  `--apply=projects`, `--apply=global`, or `--apply=all` scope.
+- Preview uv projects, standalone virtual environments, and uv tools with
+  `sandwich checkZoo --dryrun`. Apply only with an explicit scoped mode.
+- Use `--protect` or `--protect-file` for Python packages that must retain their
+  installed or locked versions, especially hardware-specific stacks.
+- Never replace these workflows with `pip`, system-Python writes, an
+  untracked Cargo binary updater, or direct edits to generated lockfiles.
 
 Runtime state and installer backups belong under Sandwich's user state
 directory, never in the source repository.
