@@ -104,7 +104,7 @@ case "${1:-doctor}" in
         esac
         ;;
     version|--version|-v)
-        printf '%s\n' '0.8.0'
+        printf '%s\n' '0.8.1'
         ;;
     help|--help|-h)
         cat <<'EOF'

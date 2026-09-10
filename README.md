@@ -83,9 +83,15 @@ sandwich hermes update  # back up, update, and rebuild Hermes through Bun
 `sandwich checkExpr` starts at `~/.bun/install/global`, finds each user-owned
 project with a Bun lockfile, and runs `bun audit`. Vulnerable packages are added
 to (or refreshed inside) that project's top-level `overrides` block before a
-normal `bun update`. Existing unrelated overrides are preserved. Sandwich does
-not invoke a project build or trust blocked dependency scripts; it reports the
-project's build hooks and tells you when `bun pm untrusted` needs review.
+normal `bun update`. Sandwich selects the newest non-vulnerable release that
+still satisfies every installed consumer's declared range. It also repairs a
+stale override that breaks a directly installed application's declared range
+when one compatible release can satisfy all consumers and an isolated audit
+confirms that release is clean; it will report an unresolved advisory instead
+of forcing an API-incompatible major.
+Existing unrelated overrides are preserved. Sandwich does not invoke a project
+build or trust blocked dependency scripts; it reports the project's build hooks
+and tells you when `bun pm untrusted` needs review.
 Use `sandwich checkExpr --dryrun` to print the proposed overrides without
 changing manifests, locks, or installed modules.
 

@@ -309,6 +309,106 @@ done
 check "Hermes wrapper help is available" \
     contains "$(sandwich hermes help)" "never patched"
 
+expr="$fixture/check-expr"
+mkdir -p \
+    "$expr/project/node_modules/@deepseek-ai/dsh-app-boot" \
+    "$expr/project/node_modules/@deepseek-ai/cordis-plugin-include" \
+    "$expr/project/node_modules/js-yaml"
+cat >"$expr/project/package.json" <<'EOF'
+{
+  "name": "global-fixture",
+  "private": true,
+  "dependencies": {
+    "@deepseek-ai/dsh-app-boot": "1.0.0"
+  },
+  "overrides": {
+    "js-yaml": "^5.4.1"
+  }
+}
+EOF
+printf '%s\n' '# fixture lock' >"$expr/project/bun.lock"
+cat >"$expr/project/node_modules/@deepseek-ai/dsh-app-boot/package.json" <<'EOF'
+{"name":"@deepseek-ai/dsh-app-boot","version":"1.0.0","dependencies":{"js-yaml":"^4.2.0"}}
+EOF
+cat >"$expr/project/node_modules/@deepseek-ai/cordis-plugin-include/package.json" <<'EOF'
+{"name":"@deepseek-ai/cordis-plugin-include","version":"1.0.0","dependencies":{"js-yaml":"^4.1.0"}}
+EOF
+cat >"$expr/project/node_modules/js-yaml/package.json" <<'EOF'
+{"name":"js-yaml","version":"5.4.1"}
+EOF
+cat >"$expr/fake-bun" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$SANDWICH_FAKE_BUN_LOG"
+case "$*" in
+    "pm view js-yaml versions --json")
+        printf '%s\n' '["4.2.0","4.3.0","4.3.1","4.3.2","5.4.1"]'
+        ;;
+    "audit --json")
+        if [[ -f node_modules/js-yaml/package.json ]]; then
+            version=$(sed -n 's/.*"version":"\([^"]*\)".*/\1/p' node_modules/js-yaml/package.json)
+        else
+            version=$(sed -n 's/.*"js-yaml": "\([^"]*\)".*/\1/p' package.json)
+        fi
+        if [[ "$version" == "4.2.0" ]]; then
+            printf '%s\n' '{"js-yaml":[{"severity":"high","vulnerable_versions":">=4.0.0 <4.3.2"}]}'
+            exit 1
+        fi
+        printf '%s\n' '{}'
+        ;;
+    update)
+        version=$(sed -n 's/.*"js-yaml": "\([^"]*\)".*/\1/p' package.json)
+        [[ -n "$version" ]] || version=4.2.0
+        printf '{"name":"js-yaml","version":"%s"}\n' "$version" >node_modules/js-yaml/package.json
+        ;;
+    "pm untrusted") printf '%s\n' 'Found 0 untrusted dependencies' ;;
+    "install --lockfile-only --ignore-scripts") printf '%s\n' '# audit fixture lock' >bun.lock ;;
+    "install --frozen-lockfile --ignore-scripts") ;;
+    *) printf 'unexpected fake bun command: %s\n' "$*" >&2; exit 93 ;;
+esac
+EOF
+chmod +x "$expr/fake-bun"
+: >"$expr/bun.log"
+check "checkExpr dry-run reports an incompatible override without changing it" \
+    bash -c '
+        before=$(sha256sum "$2/project/package.json" "$2/project/bun.lock")
+        output=$(SANDWICH_BUN="$2/fake-bun" SANDWICH_FAKE_BUN_LOG="$2/bun.log" "$1" "$3/scripts/check-expr.ts" --dryrun "$2/project")
+        after=$(sha256sum "$2/project/package.json" "$2/project/bun.lock")
+        [[ "$before" == "$after" ]] &&
+            [[ "$output" == *"compatibility repair: js-yaml ^5.4.1 -> 4.3.2"* ]] &&
+            ! grep -Fxq update "$2/bun.log"
+    ' _ "$SANDWICH_BUN" "$expr" "$root"
+
+: >"$expr/bun.log"
+check "checkExpr repairs a cross-major override within consumer ranges" \
+    bash -c '
+        SANDWICH_BUN="$2/fake-bun" SANDWICH_FAKE_BUN_LOG="$2/bun.log" "$1" "$3/scripts/check-expr.ts" "$2/project" >/dev/null &&
+            grep -Fq "\"js-yaml\": \"4.3.2\"" "$2/project/package.json" &&
+            grep -Fq "\"version\":\"4.3.2\"" "$2/project/node_modules/js-yaml/package.json" &&
+            grep -Fxq update "$2/bun.log" &&
+            ! grep -Fq "pm view js-yaml version " "$2/bun.log"
+    ' _ "$SANDWICH_BUN" "$expr" "$root"
+
+cp -R "$expr/project" "$expr/security-project"
+cat >"$expr/security-project/package.json" <<'EOF'
+{
+  "name": "global-security-fixture",
+  "private": true,
+  "dependencies": {
+    "@deepseek-ai/dsh-app-boot": "1.0.0"
+  }
+}
+EOF
+printf '%s\n' '{"name":"js-yaml","version":"4.2.0"}' >"$expr/security-project/node_modules/js-yaml/package.json"
+: >"$expr/bun.log"
+check "checkExpr selects the audit-clean release inside a consumer's major" \
+    bash -c '
+        SANDWICH_BUN="$2/fake-bun" SANDWICH_FAKE_BUN_LOG="$2/bun.log" "$1" "$3/scripts/check-expr.ts" "$2/security-project" >/dev/null &&
+            grep -Fq "\"js-yaml\": \"4.3.2\"" "$2/security-project/package.json" &&
+            grep -Fq "\"version\":\"4.3.2\"" "$2/security-project/node_modules/js-yaml/package.json" &&
+            ! grep -Fq "pm view js-yaml version " "$2/bun.log"
+    ' _ "$SANDWICH_BUN" "$expr" "$root"
+
 check "checkZoo requires an explicit action" \
     bash -c '! "$1/bin/sandwich" checkZoo >/dev/null 2>&1' _ "$root"
 check "checkFence requires an explicit action" \

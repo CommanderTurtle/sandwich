@@ -1,7 +1,7 @@
 {
   "schema_version": "sandwich.component.v1",
   "id": "sandwich",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "runtime": "bun",
   "install_scope": "user",
   "repository": "https://github.com/CommanderTurtle/sandwich.git",
