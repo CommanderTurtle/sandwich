@@ -91,6 +91,11 @@ fi
     exit 2
 }
 
+gateway_was_active=0
+if "$hermes" gateway status >/dev/null 2>&1; then
+    gateway_was_active=1
+fi
+
 print_status
 
 # The official updater remains the only component that changes Hermes. Its
@@ -126,5 +131,9 @@ fi
 [[ -f web/package.json ]] && (cd web && "$root/bin/npm" run build)
 
 print_status
+"$root/scripts/manage-integrations.sh" reconcile
 "$root/bin/sandwich" doctor
+if [[ "$gateway_was_active" == 1 ]]; then
+    "$hermes" gateway restart
+fi
 printf 'Hermes is current; its tracked source remains identical to upstream.\n'

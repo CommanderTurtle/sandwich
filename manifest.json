@@ -1,7 +1,7 @@
 {
   "schema_version": "sandwich.component.v1",
   "id": "sandwich",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "runtime": "bun",
   "install_scope": "user",
   "repository": "https://github.com/CommanderTurtle/sandwich.git",
@@ -28,7 +28,7 @@
     "check_expr": {
       "argv": ["bin/sandwich", "checkExpr"],
       "mutating": true,
-      "human_confirmation": false
+      "human_confirmation": true
     },
     "check_fence_preview": {
       "argv": ["bin/sandwich", "checkFence", "--dryrun"],
@@ -70,6 +70,23 @@
       "mutating": true,
       "human_confirmation": true,
       "maintenance_window": true
+    },
+    "integrations_check": {
+      "argv": ["scripts/manage-integrations.sh", "check", "--strict"],
+      "mutating": false,
+      "human_confirmation": false
+    },
+    "integrations_reconcile": {
+      "argv": ["scripts/manage-integrations.sh", "reconcile", "--strict"],
+      "mutating": true,
+      "human_confirmation": true,
+      "maintenance_window": true
+    },
+    "integrations_update": {
+      "argv": ["scripts/manage-integrations.sh", "update", "--strict"],
+      "mutating": true,
+      "human_confirmation": true,
+      "maintenance_window": true
     }
   },
   "integrations": {
@@ -81,6 +98,11 @@
     "hermes": {
       "mode": "external-command-compatibility",
       "command": ["bin/sandwich", "hermes", "update"],
+      "source_mutation": false
+    },
+    "integration_owners": {
+      "mode": "repository-owned-scripts",
+      "command": ["bin/sandwich", "integrations", "reconcile"],
       "source_mutation": false
     }
   }

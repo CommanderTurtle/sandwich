@@ -103,12 +103,16 @@ case "${1:-doctor}" in
                 ;;
         esac
         ;;
+    integrations)
+        shift
+        exec "$SANDWICH_ROOT/scripts/manage-integrations.sh" "$@"
+        ;;
     version|--version|-v)
-        printf '%s\n' '0.8.1'
+        printf '%s\n' '0.8.2'
         ;;
     help|--help|-h)
         cat <<'EOF'
-usage: sandwich [doctor|audit|checkExpr|checkFence|checkZoo|hermes|version|help]
+usage: sandwich [doctor|audit|checkExpr|checkFence|checkZoo|hermes|integrations|version|help]
 
   sandwich doctor  verify Bun and every compatibility shim
   sandwich audit   report foreign JavaScript runtimes without changing them
@@ -120,12 +124,15 @@ usage: sandwich [doctor|audit|checkExpr|checkFence|checkZoo|hermes|version|help]
                          explicit dry-run/apply mode and package protections
   sandwich hermes update  update pristine Hermes through the Bun shims
   sandwich hermes check   verify the official Hermes checkout is pristine
+  sandwich integrations check      run every installed owner doctor
+  sandwich integrations reconcile  reapply and verify owner integrations
+  sandwich integrations update     update, integrate, and verify every owner
 
 Sandwich never patches or commits into Hermes. Do not Git-pull Hermes by hand;
 use `sandwich hermes update` as the complete update command.
 EOF
         ;;
     *)
-        bs_die "usage: sandwich [doctor|audit|checkExpr|checkFence|checkZoo|hermes|version|help]"
+        bs_die "usage: sandwich [doctor|audit|checkExpr|checkFence|checkZoo|hermes|integrations|version|help]"
         ;;
 esac

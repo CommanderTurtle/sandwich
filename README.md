@@ -77,8 +77,26 @@ sandwich checkExpr      # audit every Bun root, repair overrides, bun update
 sandwich checkFence --dryrun  # audit Cargo projects and installed binaries
 sandwich checkZoo --dryrun    # audit uv projects, venvs, and installed tools
 sandwich hermes check   # verify Hermes is an unmodified upstream checkout
-sandwich hermes update  # back up, update, and rebuild Hermes through Bun
+sandwich hermes update  # update Hermes, reconcile integrations, restart an active gateway
+sandwich integrations check      # run each installed repository owner doctor
+sandwich integrations reconcile  # reapply and verify installed owner contracts
+sandwich integrations update     # update, integrate, and verify installed owners
 ```
+
+Localflame, Context Mode, Camofox, Codebase Memory, Librarian, Leetcoder,
+Retrieval, and Persephone keep ownership of their own harness configuration.
+Sandwich only invokes their checked-in scripts in a fixed order. It does not
+copy their MCP definitions, skills, hooks, profiles, or generated state.
+
+`sandwich integrations check` and `reconcile` skip owners that are not
+installed. Add `--strict` when this workstation's complete roster is required.
+Every action accepts `--dry-run` to print the exact owner entrypoints without
+running them. None of the owner doctors contacts Firecrawl or starts a model.
+
+After an official Hermes update, `sandwich hermes update` reapplies all
+installed owner contracts and restarts the default gateway only if it was
+already active. This keeps update season one command while leaving each
+project's update and integration logic in that project's repository.
 
 `sandwich checkExpr` starts at `~/.bun/install/global`, finds each user-owned
 project with a Bun lockfile, and runs `bun audit`. Vulnerable packages are added

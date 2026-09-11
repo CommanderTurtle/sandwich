@@ -48,7 +48,11 @@ check "component manifest matches CLI version" \
         if (manifest.version !== packageManifest.version) process.exit(1);
         if (packageManifest.dependencies.amaro !== "1.1.11") process.exit(1);
         if (manifest.operations.hermes_update.human_confirmation !== true) process.exit(1);
+        if (manifest.operations.integrations_check.mutating !== false) process.exit(1);
+        if (manifest.operations.integrations_reconcile.human_confirmation !== true) process.exit(1);
+        if (manifest.operations.integrations_update.maintenance_window !== true) process.exit(1);
         if (manifest.operations.hermes_check.mutating !== false) process.exit(1);
+        if (manifest.operations.check_expr.human_confirmation !== true) process.exit(1);
         if (manifest.integrations.hermes.source_mutation !== false) process.exit(1);
         if (manifest.operations.audit.mutating !== false) process.exit(1);
         if (manifest.operations.check_fence_preview.mutating !== false) process.exit(1);
@@ -147,6 +151,61 @@ check "npx uses bunx with Bun runtime" \
 check "npm version is valid semver" matches "$(npm --version)" '^[0-9]+\.[0-9]+\.[0-9]+$'
 check "npx version matches npm compatibility version" equals "$(npx --version)" "$(npm --version)"
 check "corepack resolves to Sandwich" contains "$(corepack --version)" "sandwich-"
+
+integration_fixture="$fixture/integrations"
+integration_projects="$integration_fixture/Hermes"
+integration_localflame="$integration_fixture/Deepseek/localflame"
+mkdir -p "$integration_projects" "$integration_localflame"
+for spec in \
+    "$integration_localflame:doctor.sh,install.sh,update.sh" \
+    "$integration_projects/context-mode:doctor.sh,integrate.sh,update.sh" \
+    "$integration_projects/camofox-mcp:doctor.sh,integrate.sh,update.sh" \
+    "$integration_projects/codebase-memory-mcp:doctor-local.sh,integrate-local.sh,update-local.sh" \
+    "$integration_projects/librarian:doctor.sh,integrate.sh,update.sh" \
+    "$integration_projects/leetcoder:doctor.sh,integrate.sh,update.sh" \
+    "$integration_projects/retrieval:doctor.sh,integrate.sh,update.sh" \
+    "$integration_projects/persephone:scripts/doctor.sh,scripts/integrate.sh,scripts/update.sh"; do
+    owner_dir="${spec%%:*}"
+    scripts="${spec#*:}"
+    mkdir -p "$owner_dir"
+    old_ifs="$IFS"
+    IFS=,
+    set -- $scripts
+    IFS="$old_ifs"
+    for relative in "$@"; do
+        mkdir -p "$(dirname -- "$owner_dir/$relative")"
+        cat >"$owner_dir/$relative" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$0" >>"$SANDWICH_INTEGRATION_TEST_LOG"
+EOF
+        chmod +x "$owner_dir/$relative"
+    done
+done
+integration_log="$integration_fixture/calls.log"
+: >"$integration_log"
+check "integration check delegates to all eight owner doctors" \
+    bash -c '
+        HERMES_PROJECTS_DIR="$1" LOCALFLAME_ROOT="$2" \
+        SANDWICH_INTEGRATION_TEST_LOG="$3" \
+            "$4/scripts/manage-integrations.sh" check --strict >/dev/null &&
+        [[ "$(wc -l <"$3")" == 8 ]]
+    ' _ "$integration_projects" "$integration_localflame" "$integration_log" "$root"
+: >"$integration_log"
+check "integration reconciliation uses owner integrators then doctors" \
+    bash -c '
+        HERMES_PROJECTS_DIR="$1" LOCALFLAME_ROOT="$2" \
+        SANDWICH_INTEGRATION_TEST_LOG="$3" \
+            "$4/scripts/manage-integrations.sh" reconcile --strict >/dev/null &&
+        [[ "$(wc -l <"$3")" == 16 ]]
+    ' _ "$integration_projects" "$integration_localflame" "$integration_log" "$root"
+: >"$integration_log"
+check "integration update uses owner updaters then doctors" \
+    bash -c '
+        HERMES_PROJECTS_DIR="$1" LOCALFLAME_ROOT="$2" \
+        SANDWICH_INTEGRATION_TEST_LOG="$3" \
+            "$4/scripts/manage-integrations.sh" update --strict >/dev/null &&
+        [[ "$(wc -l <"$3")" == 16 ]]
+    ' _ "$integration_projects" "$integration_localflame" "$integration_log" "$root"
 
 mkdir -p "$fixture/fixture-dep"
 cat >"$fixture/fixture-dep/package.json" <<'EOF'
