@@ -47,7 +47,9 @@ export PATH="$root/bin:$HOME/.local/bin:$BUN_INSTALL/bin:$PATH"
 
 owners=(
     localflame
+    hermes-workspace
     context-mode
+    camofox-browser
     camofox-mcp
     codebase-memory-mcp
     librarian
@@ -59,6 +61,7 @@ owners=(
 owner_root() {
     case "$1" in
         localflame) printf '%s\n' "$localflame" ;;
+        camofox-browser) printf '%s\n' "$projects/camofox/camofox-browser" ;;
         *) printf '%s\n' "$projects/$1" ;;
     esac
 }
@@ -70,13 +73,16 @@ owner_script() {
         localflame:check) printf '%s\n' doctor.sh ;;
         localflame:reconcile) printf '%s\n' install.sh ;;
         localflame:update) printf '%s\n' update.sh ;;
-        context-mode:check|camofox-mcp:check|librarian:check|leetcoder:check|retrieval:check)
+        hermes-workspace:check|context-mode:check|camofox-browser:check|camofox-mcp:check)
+            printf '%s\n' audit.sh
+            ;;
+        librarian:check|leetcoder:check|retrieval:check)
             printf '%s\n' doctor.sh
             ;;
-        context-mode:reconcile|camofox-mcp:reconcile|librarian:reconcile|leetcoder:reconcile|retrieval:reconcile)
+        hermes-workspace:reconcile|context-mode:reconcile|camofox-browser:reconcile|camofox-mcp:reconcile|librarian:reconcile|leetcoder:reconcile|retrieval:reconcile)
             printf '%s\n' integrate.sh
             ;;
-        context-mode:update|camofox-mcp:update|librarian:update|leetcoder:update|retrieval:update)
+        hermes-workspace:update|context-mode:update|camofox-browser:update|camofox-mcp:update|librarian:update|leetcoder:update|retrieval:update)
             printf '%s\n' update.sh
             ;;
         codebase-memory-mcp:check) printf '%s\n' doctor-local.sh ;;

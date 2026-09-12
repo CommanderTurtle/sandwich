@@ -81,12 +81,15 @@ sandwich hermes update  # update Hermes, reconcile integrations, restart an acti
 sandwich integrations check      # run each installed repository owner doctor
 sandwich integrations reconcile  # reapply and verify installed owner contracts
 sandwich integrations update     # update, integrate, and verify installed owners
+sandwich repository audit ...    # inspect one owner's source/fork/dependency state
+sandwich repository update ...   # prepare a verified owner branch; never push it
 ```
 
-Localflame, Context Mode, Camofox, Codebase Memory, Librarian, Leetcoder,
-Retrieval, and Persephone keep ownership of their own harness configuration.
-Sandwich only invokes their checked-in scripts in a fixed order. It does not
-copy their MCP definitions, skills, hooks, profiles, or generated state.
+Localflame, Hermes Workspace, Context Mode, Camofox Browser, Camofox MCP,
+Codebase Memory, Librarian, Leetcoder, Retrieval, and Persephone keep ownership
+of their own harness configuration. Sandwich only invokes their checked-in
+scripts in a fixed order. It does not copy their MCP definitions, skills,
+hooks, profiles, or generated state.
 
 `sandwich integrations check` and `reconcile` skip owners that are not
 installed. Add `--strict` when this workstation's complete roster is required.
@@ -112,6 +115,16 @@ build or trust blocked dependency scripts; it reports the project's build hooks
 and tells you when `bun pm untrusted` needs review.
 Use `sandwich checkExpr --dryrun` to print the proposed overrides without
 changing manifests, locks, or installed modules.
+
+Repository owners can reuse the same Git maintenance engine without copying it
+into Diogenes or each integration. `sandwich repository audit` fetches the
+declared source and publishing remotes, reports both divergences, runs a scoped
+`checkExpr --dryrun` when a Bun lock exists, and invokes the owner's read-only
+doctor. `sandwich repository update` repairs named remotes, safely merges the
+publishing/source refs, applies the scoped dependency pass, invokes the owner's
+verifier, commits only verified tracked maintenance edits, and prints the exact
+normal or force-with-lease push command. It never pushes, stashes, rebases, or
+discards worktree data.
 
 ### Cargo maintenance
 

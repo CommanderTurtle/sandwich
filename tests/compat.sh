@@ -51,6 +51,8 @@ check "component manifest matches CLI version" \
         if (manifest.operations.integrations_check.mutating !== false) process.exit(1);
         if (manifest.operations.integrations_reconcile.human_confirmation !== true) process.exit(1);
         if (manifest.operations.integrations_update.maintenance_window !== true) process.exit(1);
+        if (manifest.operations.repository_audit.mutating !== false) process.exit(1);
+        if (manifest.operations.repository_update.human_confirmation !== true) process.exit(1);
         if (manifest.operations.hermes_check.mutating !== false) process.exit(1);
         if (manifest.operations.check_expr.human_confirmation !== true) process.exit(1);
         if (manifest.integrations.hermes.source_mutation !== false) process.exit(1);
@@ -158,8 +160,10 @@ integration_localflame="$integration_fixture/Deepseek/localflame"
 mkdir -p "$integration_projects" "$integration_localflame"
 for spec in \
     "$integration_localflame:doctor.sh,install.sh,update.sh" \
-    "$integration_projects/context-mode:doctor.sh,integrate.sh,update.sh" \
-    "$integration_projects/camofox-mcp:doctor.sh,integrate.sh,update.sh" \
+    "$integration_projects/hermes-workspace:audit.sh,integrate.sh,update.sh" \
+    "$integration_projects/context-mode:audit.sh,integrate.sh,update.sh" \
+    "$integration_projects/camofox/camofox-browser:audit.sh,integrate.sh,update.sh" \
+    "$integration_projects/camofox-mcp:audit.sh,integrate.sh,update.sh" \
     "$integration_projects/codebase-memory-mcp:doctor-local.sh,integrate-local.sh,update-local.sh" \
     "$integration_projects/librarian:doctor.sh,integrate.sh,update.sh" \
     "$integration_projects/leetcoder:doctor.sh,integrate.sh,update.sh" \
@@ -183,12 +187,12 @@ EOF
 done
 integration_log="$integration_fixture/calls.log"
 : >"$integration_log"
-check "integration check delegates to all eight owner doctors" \
+check "integration check delegates to all ten owner audits or doctors" \
     bash -c '
         HERMES_PROJECTS_DIR="$1" LOCALFLAME_ROOT="$2" \
         SANDWICH_INTEGRATION_TEST_LOG="$3" \
             "$4/scripts/manage-integrations.sh" check --strict >/dev/null &&
-        [[ "$(wc -l <"$3")" == 8 ]]
+        [[ "$(wc -l <"$3")" == 10 ]]
     ' _ "$integration_projects" "$integration_localflame" "$integration_log" "$root"
 : >"$integration_log"
 check "integration reconciliation uses owner integrators then doctors" \
@@ -196,7 +200,7 @@ check "integration reconciliation uses owner integrators then doctors" \
         HERMES_PROJECTS_DIR="$1" LOCALFLAME_ROOT="$2" \
         SANDWICH_INTEGRATION_TEST_LOG="$3" \
             "$4/scripts/manage-integrations.sh" reconcile --strict >/dev/null &&
-        [[ "$(wc -l <"$3")" == 16 ]]
+        [[ "$(wc -l <"$3")" == 20 ]]
     ' _ "$integration_projects" "$integration_localflame" "$integration_log" "$root"
 : >"$integration_log"
 check "integration update uses owner updaters then doctors" \
@@ -204,8 +208,76 @@ check "integration update uses owner updaters then doctors" \
         HERMES_PROJECTS_DIR="$1" LOCALFLAME_ROOT="$2" \
         SANDWICH_INTEGRATION_TEST_LOG="$3" \
             "$4/scripts/manage-integrations.sh" update --strict >/dev/null &&
-        [[ "$(wc -l <"$3")" == 16 ]]
+        [[ "$(wc -l <"$3")" == 20 ]]
     ' _ "$integration_projects" "$integration_localflame" "$integration_log" "$root"
+
+repository_fixture="$fixture/repository-owner"
+mkdir -p "$repository_fixture"
+git init --bare --initial-branch=main "$repository_fixture/source.git" >/dev/null
+git init --bare --initial-branch=main "$repository_fixture/fork.git" >/dev/null
+git init --initial-branch=main "$repository_fixture/seed" >/dev/null
+git -C "$repository_fixture/seed" config user.name Fixture
+git -C "$repository_fixture/seed" config user.email fixture@example.invalid
+printf 'base\n' >"$repository_fixture/seed/state.txt"
+git -C "$repository_fixture/seed" add state.txt
+git -C "$repository_fixture/seed" commit -m base >/dev/null
+git -C "$repository_fixture/seed" remote add source "$repository_fixture/source.git"
+git -C "$repository_fixture/seed" remote add fork "$repository_fixture/fork.git"
+git -C "$repository_fixture/seed" push source main >/dev/null
+git -C "$repository_fixture/seed" push fork main >/dev/null
+printf 'source\n' >>"$repository_fixture/seed/state.txt"
+git -C "$repository_fixture/seed" commit -am source >/dev/null
+git -C "$repository_fixture/seed" push source main >/dev/null
+git clone "$repository_fixture/fork.git" "$repository_fixture/owner" >/dev/null
+git -C "$repository_fixture/owner" remote rename origin fork
+git -C "$repository_fixture/owner" remote add upstream "$repository_fixture/source.git"
+git -C "$repository_fixture/owner" config user.name Fixture
+git -C "$repository_fixture/owner" config user.email fixture@example.invalid
+cat >"$repository_fixture/owner/doctor.sh" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+git diff --check
+EOF
+chmod +x "$repository_fixture/owner/doctor.sh"
+git -C "$repository_fixture/owner" add doctor.sh
+git -C "$repository_fixture/owner" commit -m doctor >/dev/null
+
+repository_audit_output="$({
+    "$root/bin/sandwich" repository audit \
+        --root="$repository_fixture/owner" \
+        --source-remote=upstream \
+        --source-url="$repository_fixture/source.git" \
+        --source-branch=main \
+        --fork-remote=fork \
+        --fork-url="$repository_fixture/fork.git" \
+        --fork-branch=main \
+        --doctor=doctor.sh
+} 2>&1)"
+check "repository audit reports source and fork divergence without mutation" \
+    bash -c '
+        [[ "$1" == *"source     behind=1 ahead=1 relation=clean-merge"* ]] &&
+        [[ "$1" == *"fork       behind=0 ahead=1 relation=contained"* ]] &&
+        [[ "$(git -C "$2" rev-parse HEAD)" != "$(git --git-dir="$3" rev-parse main)" ]]
+    ' _ "$repository_audit_output" "$repository_fixture/owner" "$repository_fixture/source.git"
+
+repository_update_output="$({
+    "$root/bin/sandwich" repository update \
+        --root="$repository_fixture/owner" \
+        --source-remote=upstream \
+        --source-url="$repository_fixture/source.git" \
+        --source-branch=main \
+        --fork-remote=fork \
+        --fork-url="$repository_fixture/fork.git" \
+        --fork-branch=main \
+        --verify=doctor.sh
+} 2>&1)"
+check "repository update merges and verifies locally but never pushes" \
+    bash -c '
+        [[ "$1" == *"Repository update verified locally. No remote was pushed."* ]] &&
+        [[ "$1" == *"git push"* ]] &&
+        grep -q source "$2/state.txt" &&
+        [[ "$(git --git-dir="$3" rev-parse main)" != "$(git -C "$2" rev-parse HEAD)" ]]
+    ' _ "$repository_update_output" "$repository_fixture/owner" "$repository_fixture/fork.git"
 
 mkdir -p "$fixture/fixture-dep"
 cat >"$fixture/fixture-dep/package.json" <<'EOF'

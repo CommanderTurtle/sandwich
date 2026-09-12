@@ -1,7 +1,7 @@
 {
   "schema_version": "sandwich.component.v1",
   "id": "sandwich",
-  "version": "0.8.2",
+  "version": "0.9.0",
   "runtime": "bun",
   "install_scope": "user",
   "repository": "https://github.com/CommanderTurtle/sandwich.git",
@@ -84,6 +84,17 @@
     },
     "integrations_update": {
       "argv": ["scripts/manage-integrations.sh", "update", "--strict"],
+      "mutating": true,
+      "human_confirmation": true,
+      "maintenance_window": true
+    },
+    "repository_audit": {
+      "argv": ["scripts/manage-repository.sh", "audit"],
+      "mutating": false,
+      "human_confirmation": false
+    },
+    "repository_update": {
+      "argv": ["scripts/manage-repository.sh", "update"],
       "mutating": true,
       "human_confirmation": true,
       "maintenance_window": true
