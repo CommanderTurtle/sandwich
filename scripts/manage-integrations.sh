@@ -101,15 +101,15 @@ run_owner_script() {
     local owner_dir="$3"
     local relative
     relative="$(owner_script "$owner" "$requested")"
-    local executable="$owner_dir/$relative"
-    if [[ ! -f "$executable" || ! -x "$executable" ]]; then
-        printf 'sandwich: %s owner script is missing or not executable: %s\n' \
-            "$owner" "$executable" >&2
+    local script="$owner_dir/$relative"
+    if [[ ! -f "$script" || ! -r "$script" ]]; then
+        printf 'sandwich: %s owner script is missing or unreadable: %s\n' \
+            "$owner" "$script" >&2
         return 1
     fi
-    printf '[%s] %s: %s\n' "$owner" "$requested" "$executable"
+    printf '[%s] %s: %s\n' "$owner" "$requested" "$script"
     if [[ "$dry_run" == 0 ]]; then
-        bash "$executable"
+        bash "$script"
     fi
 }
 

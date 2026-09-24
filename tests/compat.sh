@@ -185,6 +185,10 @@ EOF
         chmod +x "$owner_dir/$relative"
     done
 done
+chmod 0644 \
+    "$integration_localflame/doctor.sh" \
+    "$integration_localflame/install.sh" \
+    "$integration_localflame/update.sh"
 integration_log="$integration_fixture/calls.log"
 : >"$integration_log"
 check "integration check delegates to all ten owner audits or doctors" \
