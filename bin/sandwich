@@ -91,6 +91,10 @@ case "${1:-doctor}" in
                 shift
                 exec "$SANDWICH_ROOT/scripts/update-hermes.sh" "$@"
                 ;;
+            integrate)
+                shift
+                exec "$SANDWICH_ROOT/scripts/integrate-hermes.sh" "$@"
+                ;;
             check|status)
                 shift
                 exec "$SANDWICH_ROOT/scripts/update-hermes.sh" --check "$@"
@@ -99,7 +103,7 @@ case "${1:-doctor}" in
                 exec "$SANDWICH_ROOT/scripts/update-hermes.sh" --help
                 ;;
             *)
-                bs_die "usage: sandwich hermes [update|check]"
+                bs_die "usage: sandwich hermes [update|integrate|check]"
                 ;;
         esac
         ;;
@@ -127,7 +131,9 @@ usage: sandwich [doctor|audit|checkExpr|checkFence|checkZoo|hermes|integrations|
   sandwich checkZoo      audit and update uv projects, venvs, or tools with an
                          explicit dry-run/apply mode and package protections
   sandwich hermes update  update pristine Hermes through the Bun shims
+  sandwich hermes integrate  apply configured integrations and restart an active gateway
   sandwich hermes check   verify the official Hermes checkout is pristine
+  sandwich integrations configure  detect projects and create the local .env
   sandwich integrations check      run every installed owner doctor
   sandwich integrations reconcile  reapply and verify owner integrations
   sandwich integrations update     update, integrate, and verify every owner
@@ -135,7 +141,8 @@ usage: sandwich [doctor|audit|checkExpr|checkFence|checkZoo|hermes|integrations|
   sandwich repository update       prepare and verify one owner branch without pushing
 
 Sandwich never patches or commits into Hermes. Do not Git-pull Hermes by hand;
-use `sandwich hermes update` as the complete update command.
+use `sandwich hermes update` for Hermes, followed by `sandwich hermes integrate`
+to reapply the integrations configured in Sandwich's .env.
 EOF
         ;;
     *)

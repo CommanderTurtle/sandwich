@@ -3,17 +3,23 @@
 set -Eeuo pipefail
 
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+env_file="${SANDWICH_ENV_FILE:-$root/.env}"
+if [[ -f "$env_file" ]]; then
+    source "$env_file"
+fi
 live="${HERMES_LIVE_DIR:-$HOME/.hermes/hermes-agent}"
 mode="update"
 
 usage() {
     cat <<'EOF'
 Usage: sandwich hermes update [hermes-update options]
+       sandwich hermes integrate [--strict] [--dry-run]
        sandwich hermes check
 
 Updates an official Hermes installation while Sandwich supplies the external
 Node/npm compatibility commands through Bun. Hermes source is never patched,
 committed, rebased, or reconciled by Sandwich.
+Run `sandwich hermes integrate` separately to apply configured project integrations.
 EOF
 }
 
@@ -131,9 +137,12 @@ fi
 [[ -f web/package.json ]] && (cd web && "$root/bin/npm" run build)
 
 print_status
-"$root/scripts/manage-integrations.sh" reconcile
-"$root/bin/sandwich" doctor
-if [[ "$gateway_was_active" == 1 ]]; then
-    "$hermes" gateway restart
-fi
+# Preserve the pre-update gateway state for the integration half, including
+# retries after a failed owner script. The official updater handles its own restart.
+mkdir -p -- "$SANDWICH_TRANSIENT_LOCK_DIR"
+pending="$SANDWICH_TRANSIENT_LOCK_DIR/pending-integration-gateway"
+pending_tmp="$(mktemp "$pending.XXXXXX")"
+printf '%s\n' "$gateway_was_active" >"$pending_tmp"
+mv -f -- "$pending_tmp" "$pending"
 printf 'Hermes is current; its tracked source remains identical to upstream.\n'
+printf 'Run sandwich hermes integrate to reapply configured integrations.\n'

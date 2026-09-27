@@ -71,6 +71,17 @@
       "human_confirmation": true,
       "maintenance_window": true
     },
+    "hermes_integrate": {
+      "argv": ["bin/sandwich", "hermes", "integrate"],
+      "mutating": true,
+      "human_confirmation": true,
+      "maintenance_window": true
+    },
+    "integrations_configure": {
+      "argv": ["bin/sandwich", "integrations", "configure"],
+      "mutating": true,
+      "human_confirmation": true
+    },
     "integrations_check": {
       "argv": ["scripts/manage-integrations.sh", "check", "--strict"],
       "mutating": false,
@@ -113,7 +124,8 @@
     },
     "integration_owners": {
       "mode": "repository-owned-scripts",
-      "command": ["bin/sandwich", "integrations", "reconcile"],
+      "command": ["bin/sandwich", "hermes", "integrate"],
+      "configuration": ".env",
       "source_mutation": false
     }
   }

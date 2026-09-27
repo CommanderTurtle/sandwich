@@ -77,7 +77,9 @@ sandwich checkExpr      # audit every Bun root, repair overrides, bun update
 sandwich checkFence --dryrun  # audit Cargo projects and installed binaries
 sandwich checkZoo --dryrun    # audit uv projects, venvs, and installed tools
 sandwich hermes check   # verify Hermes is an unmodified upstream checkout
-sandwich hermes update  # update Hermes, reconcile integrations, restart an active gateway
+sandwich hermes update  # update Hermes and rebuild its Bun-compatible UI/TUI
+sandwich hermes integrate  # apply configured integrations, check, restart an active gateway
+sandwich integrations configure  # detect projects and create the local .env
 sandwich integrations check      # run each installed repository owner doctor
 sandwich integrations reconcile  # reapply and verify installed owner contracts
 sandwich integrations update     # update, integrate, and verify installed owners
@@ -88,7 +90,7 @@ sandwich repository update ...   # prepare a verified owner branch; never push i
 Localflame, Hermes Workspace, Context Mode, Camofox Browser, Camofox MCP,
 Codebase Memory, Librarian, Leetcoder, Retrieval, and Persephone keep ownership
 of their own harness configuration. Sandwich only invokes their checked-in
-scripts in a fixed order. It does not copy their MCP definitions, skills,
+scripts in the numeric order configured in `.env`. It does not copy their MCP definitions, skills,
 hooks, profiles, or generated state.
 
 `sandwich integrations check` and `reconcile` skip owners that are not
@@ -96,10 +98,33 @@ installed. Add `--strict` when this workstation's complete roster is required.
 Every action accepts `--dry-run` to print the exact owner entrypoints without
 running them. None of the owner doctors contacts Firecrawl or starts a model.
 
-After an official Hermes update, `sandwich hermes update` reapplies all
-installed owner contracts and restarts the default gateway only if it was
-already active. This keeps update season one command while leaving each
-project's update and integration logic in that project's repository.
+Update Hermes and reapply integrations as two explicit workloads:
+
+```bash
+sandwich hermes update && sandwich hermes integrate
+```
+
+The updater runs the official Hermes updater and preserves the existing Bun
+dependency/build recovery. It does not run project integration scripts.
+The integration command runs each enabled project's integrator followed by its
+check, then Sandwich's doctor, and restarts the default gateway only if it was
+active before the update (or before integration when run on its own). A failed
+integration retains the pending gateway state for a retry.
+
+On the first interactive integration run without `.env`, Sandwich detects
+integration entrypoints under `HERMES_PROJECTS_DIR` (default `~/Hermes`), plus
+Localflame at `LOCALFLAME_ROOT` (default `~/Deepseek/localflame`), and asks Y/N
+for each project. `sandwich integrations configure` can also run this setup
+directly. Noninteractive runs require a configured file; checks and dry runs
+never create one. The local `.env` is ignored by Git. `.env-example` documents
+the fields, and `SANDWICH_ENV_FILE` selects another configuration file.
+
+Add `PROJECT_1`, `PROJECT_2`, and as many further numbered entries as needed.
+Each declares a directory, an enabled flag, and repository-relative integrate,
+check, and update scripts. Numbers determine execution order and may have gaps.
+Optional argument arrays pass the owner's own harness selections and options;
+with no arguments its existing defaults are preserved. Harness configuration,
+including OMP and DSH settings, remains in each owning project.
 
 `sandwich checkExpr` starts at `~/.bun/install/global`, finds each user-owned
 project with a Bun lockfile, and runs `bun audit`. Vulnerable packages are added

@@ -40,6 +40,9 @@ runtimes or package managers.
   compatibility files into Hermes.
 - Update Hermes only with `sandwich hermes update`; Sandwich runs the official
   updater and supplies Bun-compatible Node/npm commands externally.
+- Reapply the projects selected in Sandwich's `.env` separately with
+  `sandwich hermes integrate`. Use `sandwich integrations configure` for initial
+  project discovery, or edit numbered `PROJECT_N` entries from `.env-example`.
 - Use `sandwich hermes check` to verify that Hermes has no local source files.
 - `./install.sh --with-hermes` only verifies an existing Hermes installation;
   it does not modify Hermes.

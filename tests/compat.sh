@@ -48,6 +48,7 @@ check "component manifest matches CLI version" \
         if (manifest.version !== packageManifest.version) process.exit(1);
         if (packageManifest.dependencies.amaro !== "1.1.11") process.exit(1);
         if (manifest.operations.hermes_update.human_confirmation !== true) process.exit(1);
+        if (manifest.operations.hermes_integrate.maintenance_window !== true) process.exit(1);
         if (manifest.operations.integrations_check.mutating !== false) process.exit(1);
         if (manifest.operations.integrations_reconcile.human_confirmation !== true) process.exit(1);
         if (manifest.operations.integrations_update.maintenance_window !== true) process.exit(1);
@@ -190,6 +191,9 @@ chmod 0644 \
     "$integration_localflame/install.sh" \
     "$integration_localflame/update.sh"
 integration_log="$integration_fixture/calls.log"
+export SANDWICH_ENV_FILE="$integration_fixture/.env"
+HERMES_PROJECTS_DIR="$integration_projects" LOCALFLAME_ROOT="$integration_localflame" \
+    "$root/scripts/manage-integrations.sh" configure --dry-run >"$SANDWICH_ENV_FILE"
 : >"$integration_log"
 check "integration check delegates to all ten owner audits or doctors" \
     bash -c '

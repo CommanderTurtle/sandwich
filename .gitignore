@@ -6,6 +6,7 @@
 .sandbox/
 .windows-bin/
 node_modules/
+.env
 bun-error.log
 *.log
 *.bak
