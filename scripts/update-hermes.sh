@@ -56,11 +56,6 @@ bun="$BUN_INSTALL/bin/bun"
     exit 1
 }
 
-if [[ -f "$live/web/package.json" ]]; then
-    export SANDWICH_HERMES_WEB_BUILD_COMPAT=1
-    export SANDWICH_HERMES_WEB_DIR="$(cd -- "$live/web" && pwd -P)"
-fi
-
 print_status() {
     local changes
     changes="$(git -C "$live" status --porcelain --untracked-files=all)"
@@ -104,37 +99,15 @@ fi
 
 print_status
 
-# The official updater remains the only component that changes Hermes. Its
-# npm/node subprocesses resolve to Sandwich's shims through PATH and therefore
-# execute on Bun without adding a second JavaScript runtime.
+# The official updater remains the only component that changes Hermes. Since
+# the 2026-09-12 runtime refactor (rolled out here by the 2026-09-30 update)
+# the updater provisions its own Node and npm through Hermes PM under
+# ~/.hermes/tools, installs the ui-tui and web workspaces with a root-hoisted
+# npm ci (receipt node_modules/.hermes-node-deps), and rebuilds the TUI and
+# web UI itself. Sandwich must not reinstall those workspaces on Bun
+# afterwards: Bun's filtered installs prune root-hoisted devDependencies
+# (apps/shared's vitest), which breaks the web type-check with TS2307.
 "$hermes" update "$@"
-
-# A previously interrupted update can already be at the newest source commit
-# while its JavaScript workspaces were never rebuilt. Reconcile those generated
-# dependencies with a frozen lock kept in Sandwich state. The npm shim copies
-# it into place only for the Bun process and removes it through an EXIT trap.
-cd "$live"
-"$root/bin/npm" ci \
-    --include=dev \
-    --no-fund \
-    --no-audit \
-    --progress=false \
-    --workspaces=false
-workspace_args=()
-for workspace in ui-tui web; do
-    [[ -f "$workspace/package.json" ]] && \
-        workspace_args+=(--workspace "$workspace")
-done
-if ((${#workspace_args[@]})); then
-    "$root/bin/npm" ci \
-        --include=dev \
-        --no-fund \
-        --no-audit \
-        --progress=false \
-        "${workspace_args[@]}"
-fi
-[[ -f ui-tui/package.json ]] && "$bun" run --bun --filter "./ui-tui" build
-[[ -f web/package.json ]] && (cd web && "$root/bin/npm" run build)
 
 print_status
 # Preserve the pre-update gateway state for the integration half, including
