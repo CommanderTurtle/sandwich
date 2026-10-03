@@ -1,5 +1,8 @@
 import * as nativeNodeModule from "node:module";
+import * as nativeNodeUtil from "node:util";
 import { pathToFileURL } from "node:url";
+import * as nodeFs from "node:fs";
+import * as nodePath from "node:path";
 
 // Bun intentionally does not implement URL imports. Node-oriented test harnesses
 // commonly use base64 JavaScript data URLs to evaluate a generated ESM module,
@@ -158,7 +161,10 @@ const sandwichInternalLoader = {
     parentURL: string,
     _importAttributes: ImportAttributes,
   ): Promise<unknown> {
-    return import(resolveFromParent(specifier, parentURL));
+    // Real Node's cascaded loader resolves import() through its own
+    // resolveSync, so consumers that patch resolveSync (dsh's runtime
+    // interception) stay in the resolution path here too.
+    return import(this.resolveSync(parentURL, { specifier }).url);
   },
   register(): never {
     throw new Error(
@@ -191,6 +197,101 @@ const sandwichInternalModule = Object.freeze({
   getOrInitializeCascadedLoader: () => sandwichInternalLoader,
 });
 
+// dsh's runtime interception reads Node's private module internals through the
+// node-addon-require-builtin addon. Bun has no Node internals to expose, so the
+// bridge serves the five surfaces dsh validates over Bun primitives. The
+// interception stays inert under Bun — nothing routes Bun's own import machinery
+// through these objects — so dsh only needs them to exist with the shapes its
+// Node 22/24/26 matrix validates.
+class SandwichCjsModule {
+  id: string;
+  path: string;
+  exports: Record<string, unknown> = {};
+  filename: string;
+  loaded = false;
+  children: unknown[] = [];
+
+  constructor(id: string) {
+    this.id = id;
+    this.path = nodePath.dirname(id);
+    this.filename = id;
+  }
+
+  static _nodeModulePaths(from: string): string[] {
+    const paths: string[] = [];
+    let current = nodePath.resolve(from);
+    for (;;) {
+      paths.push(nodePath.join(current, "node_modules"));
+      const parent = nodePath.dirname(current);
+      if (parent === current) return paths;
+      current = parent;
+    }
+  }
+
+  static _resolveFilename(
+    request: string,
+    parent?: { filename?: string; paths?: readonly string[] },
+  ): string {
+    if (nativeNodeModule.isBuiltin(request)) {
+      return request.startsWith("node:") ? request : `node:${request}`;
+    }
+    const anchor = parent?.filename ?? `${process.cwd()}/`;
+    if (request.startsWith("./") || request.startsWith("../")) {
+      return nodePath.resolve(nodePath.dirname(anchor), request);
+    }
+    if (request.startsWith("/")) return request;
+    for (const root of parent?.paths ?? []) {
+      const probed = SandwichCjsModule.probe(nodePath.join(root, request));
+      if (probed) return probed;
+    }
+    const error = new Error(
+      `Cannot find module '${request}' from '${anchor}'`,
+    ) as NodeJS.ErrnoException & { requireStack: string[] };
+    error.code = "MODULE_NOT_FOUND";
+    error.requireStack = [anchor];
+    throw error;
+  }
+
+  private static probe(base: string): string | undefined {
+    for (const candidate of [
+      base,
+      `${base}.js`,
+      `${base}.json`,
+      `${base}.node`,
+      `${base}${nodePath.sep}index.js`,
+      `${base}${nodePath.sep}index.json`,
+    ]) {
+      if (nodeFs.existsSync(candidate) && nodeFs.statSync(candidate).isFile()) {
+        return candidate;
+      }
+    }
+    return undefined;
+  }
+}
+
+function sandwichDefaultResolve(
+  specifier: string,
+  context: { parentURL?: string } = {},
+): { format?: string; url: string } {
+  const parentURL = context.parentURL ?? pathToFileURL(`${process.cwd()}/`).href;
+  const url = resolveFromParent(specifier, parentURL);
+  if (url.startsWith("node:")) return { url };
+  return { format: url.endsWith(".json") ? "json" : "module", url };
+}
+
+const sandwichCjsLoaderModule = Object.freeze({ Module: SandwichCjsModule });
+const sandwichCjsHelpers = Object.freeze({
+  getCjsConditions: () =>
+    new Set(["require", "node", "node-addons", "module-sync"]),
+});
+const sandwichEsmUtils = Object.freeze({
+  getDefaultConditions: () =>
+    Object.freeze(["node", "import", "module-sync", "node-addons"]),
+});
+const sandwichEsmResolve = Object.freeze({
+  defaultResolve: sandwichDefaultResolve,
+});
+
 function copyRequireProperties(
   target: NodeJS.Require,
   source: NodeJS.Require,
@@ -214,6 +315,10 @@ function sandwichCreateRequire(filename: string | URL): NodeJS.Require {
     return Object.freeze({
       requireBuiltin(id: string): unknown {
         if (id === "internal/modules/esm/loader") return sandwichInternalModule;
+        if (id === "internal/modules/cjs/loader") return sandwichCjsLoaderModule;
+        if (id === "internal/modules/helpers") return sandwichCjsHelpers;
+        if (id === "internal/modules/esm/utils") return sandwichEsmUtils;
+        if (id === "internal/modules/esm/resolve") return sandwichEsmResolve;
         if (id.startsWith("internal/")) {
           throw new Error(`Sandwich does not expose Node private module ${JSON.stringify(id)}`);
         }
@@ -285,3 +390,124 @@ Bun.plugin({
     );
   },
 });
+
+// Bun's node:util predates Node 26's util.getSystemErrorMessage, which dsh's
+// subprocess runner uses to format libuv failures. Serve the native util
+// namespace plus that one method through the same synthetic-namespace bridge
+// used for node:module above. Node accepts only negative libuv codes and
+// answers unknown ones with its own "Unknown system error" text; the table
+// holds Node 26.7.0's exact uv_strerror strings for Linux.
+const UV_ERROR_MESSAGES: Record<number, string> = {
+  1: "operation not permitted",
+  2: "no such file or directory",
+  3: "no such process",
+  4: "interrupted system call",
+  5: "i/o error",
+  6: "no such device or address",
+  7: "argument list too long",
+  8: "exec format error",
+  9: "bad file descriptor",
+  11: "resource temporarily unavailable",
+  12: "not enough memory",
+  13: "permission denied",
+  14: "bad address in system call argument",
+  16: "resource busy or locked",
+  17: "file already exists",
+  18: "cross-device link not permitted",
+  19: "no such device",
+  20: "not a directory",
+  21: "illegal operation on a directory",
+  22: "invalid argument",
+  23: "file table overflow",
+  24: "too many open files",
+  25: "inappropriate ioctl for device",
+  26: "text file is busy",
+  27: "file too large",
+  28: "no space left on device",
+  29: "invalid seek",
+  30: "read-only file system",
+  31: "too many links",
+  32: "broken pipe",
+  34: "result too large",
+  36: "name too long",
+  38: "function not implemented",
+  39: "directory not empty",
+  40: "too many symbolic links encountered",
+  49: "protocol driver not attached",
+  61: "no data available",
+  64: "machine is not on the network",
+  71: "protocol error",
+  75: "value too large for defined data type",
+  84: "illegal byte sequence",
+  88: "socket operation on non-socket",
+  89: "destination address required",
+  90: "message too long",
+  91: "protocol wrong type for socket",
+  92: "protocol not available",
+  93: "protocol not supported",
+  94: "socket type not supported",
+  95: "operation not supported on socket",
+  97: "address family not supported",
+  98: "address already in use",
+  99: "address not available",
+  100: "network is down",
+  101: "network is unreachable",
+  103: "software caused connection abort",
+  104: "connection reset by peer",
+  105: "no buffer space available",
+  106: "socket is already connected",
+  107: "socket is not connected",
+  108: "cannot send after transport endpoint shutdown",
+  110: "connection timed out",
+  111: "connection refused",
+  112: "host is down",
+  113: "host is unreachable",
+  114: "connection already in progress",
+  121: "remote I/O error",
+  125: "operation canceled",
+};
+
+function sandwichGetSystemErrorMessage(err: number): string {
+  if (typeof err !== "number" || !Number.isInteger(err) || err >= 0) {
+    const error = new RangeError(
+      `The value of "err" is out of range. It must be a negative integer. Received ${err}`,
+    ) as NodeJS.ErrnoException;
+    error.code = "ERR_OUT_OF_RANGE";
+    throw error;
+  }
+  return UV_ERROR_MESSAGES[-err] ?? `Unknown system error ${err}`;
+}
+
+const nodeUtilBridge = Object.freeze({
+  ...nativeNodeUtil,
+  default: nativeNodeUtil.default,
+  getSystemErrorMessage: sandwichGetSystemErrorMessage,
+});
+const nodeUtilBridgeSymbol = Symbol.for("sandwich.node-util.bridge");
+Object.defineProperty(globalThis, nodeUtilBridgeSymbol, {
+  configurable: true,
+  value: nodeUtilBridge,
+});
+
+const nodeUtilBridgeSource = [
+  'const bridge = globalThis[Symbol.for("sandwich.node-util.bridge")];',
+  ...Object.keys(nodeUtilBridge)
+    .filter((name) => name !== "default" && identifier.test(name))
+    .map((name) => `export const ${name} = bridge[${JSON.stringify(name)}];`),
+  "export default bridge;",
+].join("\n");
+
+Bun.plugin({
+  name: "sandwich-node-util",
+  setup(builder) {
+    builder.onResolve(
+      { filter: /^util$/, namespace: "node" },
+      () => ({ path: "util", namespace: "sandwich-node-util" }),
+    );
+    builder.onLoad(
+      { filter: /^util$/, namespace: "sandwich-node-util" },
+      () => ({ contents: nodeUtilBridgeSource, loader: "js" }),
+    );
+  },
+});
+
