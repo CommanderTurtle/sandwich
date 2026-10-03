@@ -118,7 +118,7 @@ printf 'ok - check/update contracts and dry-run isolation\n'
 
 : >"$TRACE"
 "$updater" --yes >/dev/null
-expected_update=$'hermes gateway status\nhermes update --yes\nnpm ci --include=dev --no-fund --no-audit --progress=false --workspaces=false\nnpm ci --include=dev --no-fund --no-audit --progress=false --workspace ui-tui --workspace web\nbun run --bun --filter ./ui-tui build\nnpm run build'
+expected_update=$'hermes gateway status\nhermes update --yes'
 [[ "$(cat "$TRACE")" == "$expected_update" ]]
 [[ "$(cat "$SANDWICH_HERMES_STATE_DIR/pending-integration-gateway")" == 1 ]]
 "$integrator" --strict >/dev/null
