@@ -3,17 +3,19 @@
 source "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/../lib/common.sh"
 
 doctor() {
-    local failures=0
-    local command_path
+    local failures=0 capability_failures=0
+    local command_path name native effective
 
     printf 'Sandwich\n'
+    printf '  version:   %s\n' "$("$SANDWICH_ROOT/bin/sandwich" --version)"
+    printf '  mode:      %s\n' "$SANDWICH_MODE"
     printf '  bun:       %s (%s, %s)\n' \
         "$SANDWICH_BIN" \
         "$("$SANDWICH_BIN" --version)" \
         "$("$SANDWICH_BIN" --revision)"
     printf '  node API:  %s\n' \
         "$("$SANDWICH_BIN" -e 'process.stdout.write(process.version + " / Bun " + Bun.version)')"
-    if strip_probe="$("$SANDWICH_ROOT/bin/node" --input-type=module -e '
+    if strip_probe="$(env SANDWICH_MODE=shadow "$SANDWICH_ROOT/bin/node" --input-type=module -e '
         import { stripTypeScriptTypes } from "node:module";
         const source = "const answer: number = 42;";
         const output = stripTypeScriptTypes(source);
@@ -23,17 +25,30 @@ doctor() {
         printf '  node TS:   %s\n' "$strip_probe"
     else
         printf '  node TS:   unavailable\n'
-        failures=$((failures + 1))
+        capability_failures=$((capability_failures + 1))
     fi
     printf '  global:    %s\n' "$BUN_INSTALL_GLOBAL_DIR"
     printf '  globalbin: %s\n' "$BUN_INSTALL_BIN"
     printf '  telemetry: DO_NOT_TRACK=%s\n' "${DO_NOT_TRACK:-unset}"
+    printf '  labels:    npm %s / pnpm %s / yarn %s (Bun compatibility, not native installs)\n' \
+        "$SANDWICH_NPM_VERSION" "$SANDWICH_PNPM_VERSION" "$SANDWICH_YARN_VERSION"
 
     for name in sandwich node npm npx pnpm yarn corepack; do
         command_path="$(command -v "$name" 2>/dev/null || true)"
         printf '  %-14s %s\n' "$name:" "${command_path:-missing}"
-        if [[ -z "$command_path" || "$(readlink -f -- "$command_path")" != "$SANDWICH_ROOT/bin/$name" ]]; then
+        effective="$(readlink -f -- "$command_path" 2>/dev/null || true)"
+        if [[ "$name" != sandwich && "$SANDWICH_MODE" == unshadow ]]; then
+            native="$(bs_native_target "$name" || true)"
+            if [[ -n "$native" ]]; then
+                printf '    native: %s\n' "$native"
+                continue
+            fi
+            printf '    issue: no native %s is available in unshadow mode\n' "$name"
             failures=$((failures + 1))
+        elif [[ -z "$command_path" || "$effective" != "$SANDWICH_ROOT/bin/$name" ]]; then
+            failures=$((failures + 1))
+            printf '    issue: expected %s/bin/%s; another PATH entry or shell function wins\n' "$SANDWICH_ROOT" "$name"
+            type -a "$name" 2>/dev/null || true
         fi
     done
 
@@ -58,14 +73,28 @@ doctor() {
         printf '  bunfig:    %s\n' "$HOME/.bunfig.toml"
     fi
 
-    if ((failures)); then
-        printf '  result:    FAIL (%d command resolution issue(s))\n' "$failures"
+    if ((failures || capability_failures)); then
+        printf '  result:    FAIL (%d command resolution issue(s), %d runtime capability issue(s))\n' "$failures" "$capability_failures"
+        if ((failures)) && [[ "$SANDWICH_MODE" == shadow ]]; then
+            printf '  fix:       eval "$(sandwich shadow --shell=bash)"  # Bash/Zsh; use --shell=zsh for Zsh\n'
+            printf '             Or sandwich unshadow to intentionally use native/mise commands.\n'
+            printf '             A child doctor cannot see parent-shell aliases/functions; use type -a there too.\n'
+        fi
         return 1
     fi
     printf '  result:    OK\n'
 }
 
 case "${1:-doctor}" in
+    shadow|unshadow)
+        mode="$1"
+        shift
+        exec bash "$SANDWICH_ROOT/scripts/shadow.sh" "$mode" "$@"
+        ;;
+    resolve)
+        shift
+        exec "$SANDWICH_BIN" "$SANDWICH_ROOT/scripts/resolve.ts" "$@"
+        ;;
     doctor|status)
         doctor
         ;;
@@ -116,13 +145,16 @@ case "${1:-doctor}" in
         exec "$SANDWICH_ROOT/scripts/manage-repository.sh" "$@"
         ;;
     version|--version|-v)
-        printf '%s\n' '0.9.0'
+        printf '%s\n' '0.9.1'
         ;;
     help|--help|-h)
         cat <<'EOF'
-usage: sandwich [doctor|audit|checkExpr|checkFence|checkZoo|hermes|integrations|repository|version|help]
+usage: sandwich [doctor|shadow|unshadow|resolve|audit|checkExpr|checkFence|checkZoo|hermes|integrations|repository|version|help]
 
   sandwich doctor  verify Bun and every compatibility shim
+  sandwich shadow  prefer Bun compatibility shims (prints current-shell activation)
+  sandwich unshadow  forward compatibility commands to native/mise commands
+  sandwich resolve [--dry-run]  refresh stable npm/pnpm/yarn compatibility labels
   sandwich audit   report foreign JavaScript runtimes without changing them
   sandwich checkExpr     audit Bun package roots, override vulnerabilities,
                          and run bun update without running project builds
@@ -146,6 +178,6 @@ to reapply the integrations configured in Sandwich's .env.
 EOF
         ;;
     *)
-        bs_die "usage: sandwich [doctor|audit|checkExpr|checkFence|checkZoo|hermes|integrations|repository|version|help]"
+        bs_die "usage: sandwich [doctor|shadow|unshadow|resolve|audit|checkExpr|checkFence|checkZoo|hermes|integrations|repository|version|help]"
         ;;
 esac

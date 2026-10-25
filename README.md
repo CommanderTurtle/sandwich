@@ -1,5 +1,47 @@
 # Sandwich
 
+### Shadowing, mise, and current versions
+
+```bash
+sandwich doctor                         # exact paths, runtime capability, mode
+sandwich shadow                         # persist Bun compatibility mode
+eval "$(sandwich shadow --shell=bash)"   # activate in the current Bash shell
+sandwich unshadow                       # persist native/mise forwarding
+sandwich resolve --dry-run               # inspect current stable release labels
+sandwich resolve                         # save the labels for later invocations
+```
+
+Use `--shell=zsh`, `--shell=fish`, or `--shell=powershell` to print activation
+code for those shells. Evaluate the emitted code in that shell (PowerShell:
+`sandwich shadow --shell=powershell | Out-String | Invoke-Expression`). A child
+program cannot change its parent shell's PATH. Put shell activation after mise
+activation when Sandwich should win. `shadow` and `unshadow` also accept
+`--dry-run`; nothing is removed, no manager is uninstalled, and no mise shim is
+modified. `unshadow` leaves Sandwich callable while its compatibility commands
+forward to the next non-Sandwich executable on PATH. Missing native commands
+fail explicitly; they never silently fall back to Bun. `hash -r` (Bash) or
+`rehash` (Zsh) clears command-location caches. An exported `SANDWICH_MODE`
+overrides the saved mode; unset it to return to the persistent setting.
+
+Doctor separates PATH conflicts from runtime failures and prints each offender
+and the expected path. Native/mise commands are valid in unshadow mode. The
+Windows dispatcher checks its own Bash environment, not PowerShell aliases;
+use `Get-Command node,npm,npx,pnpm,yarn,corepack -All` in the parent PowerShell
+when investigating an outer-shell conflict.
+
+`resolve` fetches the stable npm `latest` dist-tags with a bounded request and
+saves validated versions atomically in
+`${XDG_STATE_HOME:-~/.local/state}/sandwich/versions.tsv`. These are npm/pnpm/yarn
+**compatibility labels**, not claims those native managers are installed or
+their complete APIs implemented. Registry failures leave the saved set intact.
+The command also compares the running Bun with stable Bun; it does not upgrade
+the runtime or change the Node API version Bun actually implements. Existing
+`SANDWICH_NPM_VERSION`, `SANDWICH_PNPM_VERSION`, and `SANDWICH_YARN_VERSION`
+environment overrides win. Corepack continues to identify itself as Sandwich.
+There is no idle/background polling. Mode is stored under
+`${XDG_CONFIG_HOME:-~/.config}/sandwich/mode`; `SANDWICH_STATE_HOME` and
+`SANDWICH_CONFIG_HOME` can override these Sandwich-specific directories.
+
 an oven factory. node replacement that runs on delicious bread only.
 
 Sandwich makes `node`, `npm`, `npx`, `pnpm`, `yarn`, and `corepack` resolve to

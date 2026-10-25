@@ -6,8 +6,16 @@ export DO_NOT_TRACK=1
 
 sandwich_prepend_path() {
     case ":$PATH:" in
-        *":$1:"*) ;;
-        *) PATH="$1:$PATH" ;;
+        *)
+            local entry updated=""
+            local -a entries
+            IFS=: read -r -a entries <<<"$PATH"
+            for entry in "${entries[@]}"; do
+                [[ "$entry" == "$1" ]] && continue
+                updated="${updated:+$updated:}$entry"
+            done
+            PATH="$1${updated:+:$updated}"
+            ;;
     esac
 }
 sandwich_prepend_path "$BUN_INSTALL_BIN"
