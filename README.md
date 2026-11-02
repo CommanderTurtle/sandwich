@@ -7,7 +7,8 @@ tested Bun translations. It supports workspaces, global installs, lifecycle
 trust, frozen lockfiles, and foreign package-lock projects without installing a
 second JavaScript runtime.
 
-![](https://memes.memedroid.com/images/2026-09-13/6aa713f946488.webp)
+<details><summary>click to expand</summary>
+<img width="600" height="auto" alt="buns" src="https://github.com/user-attachments/assets/7a4fa7bc-4e60-4a2e-9303-c5c0ea729305" /></details>
 
 When Bun does not expose Node's experimental
 `node:module.stripTypeScriptTypes`, Sandwich supplies its position-preserving
