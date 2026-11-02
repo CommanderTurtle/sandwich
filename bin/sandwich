@@ -157,7 +157,9 @@ usage: sandwich [doctor|shadow|unshadow|resolve|audit|checkExpr|checkFence|check
   sandwich resolve [--dry-run]  refresh stable npm/pnpm/yarn compatibility labels
   sandwich audit   report foreign JavaScript runtimes without changing them
   sandwich checkExpr     audit Bun package roots, override vulnerabilities,
-                         and run bun update without running project builds
+                         and run bun update without running project builds;
+                         --dryrun previews, --forceful overrides past declared
+                         ranges, --deep explains a blocker through firecrawl
   sandwich checkFence    audit and update Cargo locks or tracked installations
                          with an explicit dry-run/apply mode
   sandwich checkZoo      audit and update uv projects, venvs, or tools with an

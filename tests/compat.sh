@@ -496,7 +496,7 @@ case "$*" in
         printf '%s\n' '{}'
         ;;
     update)
-        version=$(sed -n 's/.*"js-yaml": "\([^"]*\)".*/\1/p' package.json)
+        version=$(sed -n 's/.*"js-yaml": "\([^"]*\)".*/\1/p' package.json | tail -n 1)
         [[ -n "$version" ]] || version=4.2.0
         printf '{"name":"js-yaml","version":"%s"}\n' "$version" >node_modules/js-yaml/package.json
         ;;
@@ -546,6 +546,163 @@ check "checkExpr selects the audit-clean release inside a consumer's major" \
             grep -Fq "\"js-yaml\": \"4.3.2\"" "$2/security-project/package.json" &&
             grep -Fq "\"version\":\"4.3.2\"" "$2/security-project/node_modules/js-yaml/package.json" &&
             ! grep -Fq "pm view js-yaml version " "$2/bun.log"
+    ' _ "$SANDWICH_BUN" "$expr" "$root"
+
+cp -R "$expr/project" "$expr/pinned-project"
+cat >"$expr/pinned-project/package.json" <<'EOF'
+{
+  "name": "pinned-security-fixture",
+  "private": true,
+  "dependencies": {
+    "@deepseek-ai/dsh-app-boot": "1.0.0",
+    "js-yaml": "4.2.0"
+  }
+}
+EOF
+printf '%s\n' '{"name":"js-yaml","version":"4.2.0"}' >"$expr/pinned-project/node_modules/js-yaml/package.json"
+: >"$expr/bun.log"
+check "checkExpr refuses to override a manually declared vulnerable version" \
+    bash -c '
+        before=$(sha256sum "$2/pinned-project/package.json" "$2/pinned-project/bun.lock")
+        ! output=$(SANDWICH_BUN="$2/fake-bun" SANDWICH_FAKE_BUN_LOG="$2/bun.log" "$1" "$3/scripts/check-expr.ts" "$2/pinned-project" 2>&1)
+        after=$(sha256sum "$2/pinned-project/package.json" "$2/pinned-project/bun.lock")
+        [[ "$output" == *"refusing to force a release outside"* ]] &&
+            [[ "$output" == *"run: sandwich checkExpr --dryrun --deep"* ]] &&
+            [[ "$before" == "$after" ]] &&
+            ! grep -Fxq update "$2/bun.log"
+    ' _ "$SANDWICH_BUN" "$expr" "$root"
+
+: >"$expr/bun.log"
+check "checkExpr dry-run with -f prints the forced upgrade without writing" \
+    bash -c '
+        before=$(sha256sum "$2/pinned-project/package.json" "$2/pinned-project/bun.lock")
+        output=$(SANDWICH_BUN="$2/fake-bun" SANDWICH_FAKE_BUN_LOG="$2/bun.log" "$1" "$3/scripts/check-expr.ts" --dryrun -f "$2/pinned-project" 2>&1)
+        after=$(sha256sum "$2/pinned-project/package.json" "$2/pinned-project/bun.lock")
+        [[ "$before" == "$after" ]] &&
+            [[ "$output" == *"js-yaml: 5.4.1 (high) forced past pinned-security-fixture requires 4.2.0"* ]] &&
+            [[ "$output" == *"including forced releases past declared ranges"* ]] &&
+            ! grep -Fxq update "$2/bun.log"
+    ' _ "$SANDWICH_BUN" "$expr" "$root"
+
+: >"$expr/bun.log"
+check "checkExpr --forceful overrides a manually declared vulnerable version" \
+    bash -c '
+        SANDWICH_BUN="$2/fake-bun" SANDWICH_FAKE_BUN_LOG="$2/bun.log" "$1" "$3/scripts/check-expr.ts" --forceful "$2/pinned-project" >/dev/null &&
+            grep -Fq "\"js-yaml\": \"5.4.1\"" "$2/pinned-project/package.json" &&
+            grep -Fq "\"version\":\"5.4.1\"" "$2/pinned-project/node_modules/js-yaml/package.json" &&
+            grep -Fxq update "$2/bun.log"
+    ' _ "$SANDWICH_BUN" "$expr" "$root"
+
+cp -R "$expr/project" "$expr/deep-project"
+cat >"$expr/deep-project/package.json" <<'EOF'
+{
+  "name": "deep-fixture",
+  "private": true,
+  "repository": "git@github.com:firecrawl/cli.git",
+  "dependencies": {
+    "@deepseek-ai/dsh-app-boot": "1.0.0",
+    "js-yaml": "4.2.0"
+  }
+}
+EOF
+printf '%s\n' '{"name":"js-yaml","version":"4.2.0"}' >"$expr/deep-project/node_modules/js-yaml/package.json"
+cat >"$expr/fake-firecrawl" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$SANDWICH_FAKE_FIRECRAWL_LOG"
+case "$*" in
+    "scrape https://github.com/firecrawl/cli/issues?q=js-yaml -f markdown --only-main-content")
+        printf '%s\n' 'Navigation Menu' '---------------' '' 'Search' '' \
+            '*   ### [chore: remove unused dependencies](https://github.com/firecrawl/cli/pull/347)' \
+            '    firecrawl/cli#347·by dtaivpp was merged Oct 23, 2026' '' \
+            '*   ### [pnpm global install crashes](https://github.com/firecrawl/cli/issues/127)'
+        ;;
+    "scrape https://github.com/firecrawl/cli/pull/347 -f markdown --only-main-content")
+        cat <<'PAGE'
+Navigation Menu
+---------------
+
+[Sign in](https://github.com/login)
+
+Conversation
+------------
+
+[Skip to content](https://github.com/firecrawl/cli/pull/347#start-of-content)
+
+You signed in with another tab or window. [Reload](https://github.com/firecrawl/cli/pull/347) to refresh your session.
+
+ dtaivpp commented Oct 23, 2026
+
+### Uh oh!
+
+There was an error while loading. [Please reload this page](https://github.com/firecrawl/cli/pull/347)
+
+Copy link
+
+Copy Markdown
+
+Member
+
+Removes two runtime dependencies and updates the pinned SDK.
+
+*   Drops `zod-to-json-schema`, which is declared but never imported in `src`.
+
+All reactions [![@dtaivpp](https://avatars.githubusercontent.com/u/17506770?s=40&v=4)](https://github.com/dtaivpp)
+
+Sorry, something went wrong.
+
+There was a problem hiding this comment.
+
+### Choose a reason for hiding this comment
+
+The reason will be displayed to describe this comment to others. [Learn more](https://docs.github.com/articles/managing-disruptive-comments/#hiding-a-comment)
+
+[Sign up for free](https://github.com/join?source=comment-repo)
+ **to join this conversation on GitHub**. Already have an account?
+
+Hide details View details
+
+`pnpm exec tsc --noEmit` and the prettier check pass.
+
+Footer
+------
+
+© 2026 GitHub, Inc.
+PAGE
+        ;;
+    *) printf 'unexpected fake firecrawl command: %s\n' "$*" >&2; exit 91 ;;
+esac
+EOF
+chmod +x "$expr/fake-firecrawl"
+: >"$expr/bun.log"
+: >"$expr/firecrawl.log"
+check "checkExpr dry-run with --deep cats the top issue-tracker result for a blocker" \
+    bash -c '
+        before=$(sha256sum "$2/deep-project/package.json" "$2/deep-project/bun.lock")
+        SANDWICH_BUN="$2/fake-bun" SANDWICH_FAKE_BUN_LOG="$2/bun.log" SANDWICH_FIRECRAWL="$2/fake-firecrawl" SANDWICH_FAKE_FIRECRAWL_LOG="$2/firecrawl.log" \
+            "$1" "$3/scripts/check-expr.ts" --dryrun --deep "$2/deep-project" >"$2/deep.out" 2>&1
+        after=$(sha256sum "$2/deep-project/package.json" "$2/deep-project/bun.lock")
+        output=$(cat "$2/deep.out")
+        [[ "$before" == "$after" ]] &&
+            [[ "$output" == *"no non-vulnerable release satisfies installed consumers"* ]] &&
+            [[ "$output" == *"https://github.com/firecrawl/cli/issues?q=js-yaml"* ]] &&
+            [[ "$output" == *"https://github.com/firecrawl/cli/pull/347"* ]] &&
+            [[ "$output" == *"declared but never imported"* ]] &&
+            [[ "$output" == *"prettier check pass"* ]] &&
+            grep -Fxq "scrape https://github.com/firecrawl/cli/pull/347 -f markdown --only-main-content" "$2/firecrawl.log" &&
+            ! grep -Fq -e "All reactions" -e "Uh oh" -e "Copy link" -e "Copy Markdown" -e "Sign up for free" \
+                -e "Skip to content" -e "signed in with another tab" \
+                -e "Navigation Menu" -e "Hide details" -e "Please reload this page" -e "to join this conversation" \
+                -e "hiding this comment" -e "something went wrong" -e "GitHub, Inc" -e "run: sandwich" "$2/deep.out"
+    ' _ "$SANDWICH_BUN" "$expr" "$root"
+
+: >"$expr/bun.log"
+: >"$expr/firecrawl.log"
+check "checkExpr --deep fails when nothing was blocked" \
+    bash -c '
+        ! output=$(SANDWICH_BUN="$2/fake-bun" SANDWICH_FAKE_BUN_LOG="$2/bun.log" SANDWICH_FIRECRAWL="$2/fake-firecrawl" SANDWICH_FAKE_FIRECRAWL_LOG="$2/firecrawl.log" \
+            "$1" "$3/scripts/check-expr.ts" --dryrun --deep "$2/pinned-project" 2>&1)
+        [[ "$output" == *"--deep explains a blocker, and nothing was blocked"* ]] && [[ ! -s "$2/firecrawl.log" ]]
     ' _ "$SANDWICH_BUN" "$expr" "$root"
 
 check "checkZoo requires an explicit action" \

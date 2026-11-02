@@ -22,6 +22,7 @@ type PackageManifest = {
   peerDependencies?: DependencyMap;
   overrides?: Record<string, unknown>;
   scripts?: Record<string, string>;
+  repository?: unknown;
 };
 type Requirement = { consumer: string; range: string; direct: boolean };
 type DependencyGraph = {
@@ -31,6 +32,11 @@ type DependencyGraph = {
 type OverridePlan = {
   fixes: Record<string, string>;
   unresolved: string[];
+};
+type Mode = {
+  dryRun: boolean;
+  force: boolean;
+  deep: boolean;
 };
 type FileSnapshot = {
   path: string;
@@ -43,6 +49,7 @@ const bun = process.env.SANDWICH_BUN
   ?? (process.env.BUN_INSTALL ? join(process.env.BUN_INSTALL, "bin", "bun") : join(home, ".bun", "bin", "bun"));
 const globalRoot = process.env.BUN_INSTALL_GLOBAL_DIR
   ?? join(process.env.BUN_INSTALL ?? join(home, ".bun"), "install", "global");
+const firecrawlCommand = process.env.SANDWICH_FIRECRAWL ?? Bun.which("firecrawl");
 
 function run(command: string[], cwd: string): Result {
   const child = Bun.spawnSync({
@@ -258,22 +265,31 @@ function publishedVersions(root: string, packageName: string): string[] {
   return versions;
 }
 
+function outsideVulnerableRanges(packageName: string, version: string, advisories: Advisory[]): boolean {
+  return advisories.every((advisory) => {
+    const vulnerable = advisory.vulnerable_versions ?? advisory.range;
+    if (!vulnerable) throw new Error(`audit did not provide a vulnerable range for ${packageName}`);
+    return !satisfies(version, vulnerable);
+  });
+}
+
+function newestRelease(root: string, packageName: string, accept: (version: string) => boolean): string | undefined {
+  const candidates = publishedVersions(root, packageName).filter(accept);
+  candidates.sort((left, right) => Bun.semver.order(left, right));
+  return candidates.at(-1);
+}
+
 function compatibleVersion(
   root: string,
   packageName: string,
   requirements: Requirement[],
   advisories: Advisory[] = [],
 ): string | undefined {
-  const candidates = publishedVersions(root, packageName).filter((version) => {
-    if (!requirements.every((item) => satisfies(version, item.range))) return false;
-    return advisories.every((advisory) => {
-      const vulnerable = advisory.vulnerable_versions ?? advisory.range;
-      if (!vulnerable) throw new Error(`audit did not provide a vulnerable range for ${packageName}`);
-      return !satisfies(version, vulnerable);
-    });
-  });
-  candidates.sort((left, right) => Bun.semver.order(left, right));
-  return candidates.at(-1);
+  return newestRelease(
+    root,
+    packageName,
+    (version) => requirements.every((item) => satisfies(version, item.range)) && outsideVulnerableRanges(packageName, version, advisories),
+  );
 }
 
 function versionIsAuditClean(root: string, packageName: string, version: string): boolean {
@@ -295,7 +311,123 @@ function versionIsAuditClean(root: string, packageName: string, version: string)
   }
 }
 
-function existingOverrideRepairs(root: string, graph: DependencyGraph): OverridePlan {
+// --deep reads the GitHub issue tracker that explains a blocker. Filters stay
+// off (`/issues?q=<name>`), so open issues, closed issues, and pull requests all
+// compete for the top result, and --only-main-content drops the navigation menu
+// at the source. Pull request pages bracket the thread with Conversation and
+// Footer markers; issue pages have neither, so their main content is kept whole.
+// GitHub's page chrome is stripped by substring so decorated variants
+// ("All reactions [<avatar>](…)") drop out too.
+const githubChrome = [
+  "Skip to content",
+  "You signed in with another tab",
+  "Hide details",
+  "View details",
+  "All reactions",
+  "### Uh oh!",
+  "There was an error while loading.",
+  "Please reload this page",
+  "Copy link",
+  "Copy Markdown",
+  "There was a problem hiding this comment.",
+  "### Choose a reason for hiding this comment",
+  "The reason will be displayed to describe this comment to others.",
+  "Sign up for free",
+  "to join this conversation on GitHub",
+  "Sorry, something went wrong.",
+];
+const deepSnippetLimit = 6000;
+let blockerCount = 0;
+
+function scrape(url: string, cwd: string): string | undefined {
+  if (!firecrawlCommand) {
+    console.error("  deep: --deep needs the firecrawl CLI on PATH");
+    return undefined;
+  }
+  const result = run([firecrawlCommand, "scrape", url, "-f", "markdown", "--only-main-content"], cwd);
+  if (result.exitCode !== 0) {
+    const reason = result.stderr.trim() || result.stdout.trim() || `exit ${result.exitCode}`;
+    console.error(`  deep: could not read ${url}: ${reason.split("\n")[0]}`);
+    return undefined;
+  }
+  return result.stdout;
+}
+
+function conversationOnly(markdown: string): string {
+  const lines = markdown.split("\n");
+  const marker = lines.findIndex((line) => line.trim() === "Conversation");
+  const begin = marker < 0 ? 0 : /^[-=]{3,}\s*$/.test(lines[marker + 1] ?? "") ? marker + 2 : marker + 1;
+  const stop = lines.findIndex((line, index) => index >= begin && line.trim() === "Footer");
+  const kept: string[] = [];
+  for (const line of lines.slice(begin, stop < 0 ? lines.length : stop)) {
+    if (!line.trim()) {
+      if (kept.at(-1) !== "") kept.push("");
+      continue;
+    }
+    if (!githubChrome.some((chrome) => line.includes(chrome))) kept.push(line.trimEnd());
+  }
+  return kept.join("\n").trim();
+}
+
+function githubRepository(value: unknown): string | undefined {
+  let url: unknown = value;
+  if (value && typeof value === "object" && "url" in value) url = value.url;
+  if (typeof url !== "string") return undefined;
+  const match = url.match(/github\.com[:/]+([\w.-]+)\/([\w.-]+)/);
+  return match ? `${match[1]}/${match[2].replace(/\.git$/, "")}` : undefined;
+}
+
+function registryRepository(root: string, packageName: string): string | undefined {
+  const result = run([bun, "pm", "view", packageName, "repository", "--json"], root);
+  if (result.exitCode !== 0) return undefined;
+  try {
+    return githubRepository(JSON.parse(result.stdout.trim() || "null"));
+  } catch {
+    return undefined;
+  }
+}
+
+// The consumer project explains "this dependency is already unused here"; the
+// dependency's own tracker explains "that release is deliberately breaking", so
+// both trackers are searched in that order and the first top result wins.
+function explainBlocker(root: string, packageName: string): void {
+  const query = packageName.startsWith("@") ? packageName.slice(packageName.indexOf("/") + 1) : packageName;
+  const trackers: string[] = [];
+  for (const candidate of [githubRepository(readManifest(join(root, "package.json"))?.repository), registryRepository(root, packageName)]) {
+    if (candidate && !trackers.includes(candidate)) trackers.push(candidate);
+  }
+  if (!trackers.length) {
+    console.error(`  deep: neither this project nor ${packageName} declares a GitHub repository`);
+    return;
+  }
+  for (const tracker of trackers) {
+    const search = `https://github.com/${tracker}/issues?q=${encodeURIComponent(query)}`;
+    const results = scrape(search, root);
+    if (results === undefined) return;
+    const hit = results.match(/\[[^\]]*\]\((https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/(?:issues|pull)\/\d+)\)/);
+    if (!hit) {
+      console.error(`  deep: ${tracker} has no issue-tracker result for ${query}`);
+      continue;
+    }
+    const link = hit[1];
+    console.log(`  deep: ${search}\n  deep: ${link}`);
+    const page = scrape(link, root);
+    if (page === undefined) return;
+    const conversation = conversationOnly(page);
+    if (!conversation) {
+      console.error(`  deep: ${link} has no readable conversation`);
+      return;
+    }
+    if (conversation.length > deepSnippetLimit) {
+      console.log(`${conversation.slice(0, conversation.lastIndexOf("\n", deepSnippetLimit))}\n  deep: snippet truncated; the full conversation is at ${link}`);
+    } else {
+      console.log(conversation);
+    }
+    return;
+  }
+}
+
+function existingOverrideRepairs(root: string, graph: DependencyGraph, mode: Mode): OverridePlan {
   const manifest = readManifest(join(root, "package.json"));
   const overrides = manifest?.overrides;
   if (overrides !== undefined && (!overrides || typeof overrides !== "object" || Array.isArray(overrides))) {
@@ -321,26 +453,37 @@ function existingOverrideRepairs(root: string, graph: DependencyGraph): Override
       console.log(`  compatibility hold: ${name} ${override} remains because the in-range ${candidate} release is vulnerable`);
     } else {
       unresolved.push(name);
+      blockerCount++;
       console.log(`  compatibility warning: ${name} ${override} conflicts with ${consumers}; mixed requirements have no single release`);
+      if (mode.deep) explainBlocker(root, name);
     }
   }
   return { fixes, unresolved };
 }
 
-function securityOverridePlan(root: string, graph: DependencyGraph, report: AuditReport): OverridePlan {
+function securityOverridePlan(root: string, graph: DependencyGraph, report: AuditReport, mode: Mode): OverridePlan {
   const fixes: Record<string, string> = {};
   const unresolved: string[] = [];
   for (const [name, advisories] of Object.entries(report)) {
     const requirements = graph.requirements.get(name) ?? [];
-    const candidate = compatibleVersion(root, name, requirements, advisories);
+    let candidate = compatibleVersion(root, name, requirements, advisories);
+    // Forceful mode relies on the overrides block outranking declared ranges at
+    // resolution time, so a manually pinned version still gets a clean release.
+    const forced = candidate === undefined && mode.force;
+    if (forced) candidate = newestRelease(root, name, (version) => outsideVulnerableRanges(name, version, advisories));
     const severity = [...new Set(advisories.map((item) => item.severity).filter(Boolean))].join(", ");
     if (candidate) {
-      fixes[name] = candidate;
-      console.log(`  ${name}: ${candidate}${severity ? ` (${severity})` : ""}`);
+      const version = candidate;
+      fixes[name] = version;
+      const blocked = requirements.filter((item) => !satisfies(version, item.range)).slice(0, 3).map((item) => `${item.consumer} requires ${item.range}`).join("; ");
+      const note = forced ? ` forced past ${blocked || "every declared range"}` : "";
+      console.log(`  ${name}: ${version}${severity ? ` (${severity})` : ""}${note}`);
     } else {
       unresolved.push(name);
+      blockerCount++;
       const consumers = requirements.slice(0, 3).map((item) => `${item.consumer} requires ${item.range}`).join("; ");
       console.error(`  ${name}: no non-vulnerable release satisfies installed consumers${consumers ? ` (${consumers})` : ""}`);
+      if (mode.deep) explainBlocker(root, name);
     }
   }
   return { fixes, unresolved };
@@ -413,13 +556,13 @@ function followUp(root: string): void {
   }
 }
 
-function check(root: string, dryRun: boolean): "clean" | "planned" | "updated" | "failed" {
+function check(root: string, mode: Mode): "clean" | "planned" | "updated" | "failed" {
   console.log(`\n[checkExpr] ${root}`);
   let graph: DependencyGraph;
   let compatibility: OverridePlan;
   try {
     graph = dependencyGraph(root);
-    compatibility = existingOverrideRepairs(root, graph);
+    compatibility = existingOverrideRepairs(root, graph, mode);
   } catch (error) {
     console.error(`  compatibility scan failed: ${error instanceof Error ? error.message : String(error)}`);
     return "failed";
@@ -427,7 +570,7 @@ function check(root: string, dryRun: boolean): "clean" | "planned" | "updated" |
 
   let changed = false;
   if (Object.keys(compatibility.fixes).length) {
-    if (dryRun) changed = true;
+    if (mode.dryRun) changed = true;
     else {
       try {
         if (!applyOverrides(root, compatibility.fixes)) return "failed";
@@ -449,7 +592,7 @@ function check(root: string, dryRun: boolean): "clean" | "planned" | "updated" |
   }
   const vulnerable = Object.entries(report);
   if (vulnerable.length === 0) {
-    if (dryRun && changed) {
+    if (mode.dryRun && changed) {
       console.log("  dry run: compatible override repairs shown above; package.json and bun.lock unchanged");
       return "planned";
     }
@@ -459,20 +602,34 @@ function check(root: string, dryRun: boolean): "clean" | "planned" | "updated" |
 
   let security: OverridePlan;
   try {
-    security = securityOverridePlan(root, graph, report);
-    if (dryRun) {
-      console.log("  dry run: compatible security overrides shown above; package.json and bun.lock unchanged");
-      return "planned";
-    }
+    security = securityOverridePlan(root, graph, report, mode);
   } catch (error) {
     console.error(`  override failed: ${error instanceof Error ? error.message : String(error)}`);
     return "failed";
   }
 
+  const blockerHint = (): void => {
+    if (!mode.deep && security.unresolved.length) {
+      console.error(`  run: sandwich checkExpr --dryrun --deep ${JSON.stringify(root)} to find out why`);
+    }
+  };
+
+  if (mode.dryRun) {
+    blockerHint();
+    console.log(mode.force
+      ? "  dry run: security overrides, including forced releases past declared ranges, shown above; package.json and bun.lock unchanged"
+      : "  dry run: compatible security overrides shown above; package.json and bun.lock unchanged");
+    return "planned";
+  }
+
   if (security.unresolved.length) {
     console.error(`  unresolved audit packages: ${security.unresolved.join(", ")}`);
-    console.error("  refusing to force a release outside an installed consumer's declared range");
-    return "failed";
+    if (!mode.force) {
+      console.error("  refusing to force a release outside an installed consumer's declared range");
+      blockerHint();
+      return "failed";
+    }
+    console.error("  forceful: applying the selected overrides anyway; the packages above have no published non-vulnerable release");
   }
   try {
     if (!applyOverrides(root, security.fixes)) return "failed";
@@ -497,7 +654,7 @@ function check(root: string, dryRun: boolean): "clean" | "planned" | "updated" |
 }
 
 function help(): void {
-  console.log(`usage: sandwich checkExpr [--dryrun] [path ...]
+  console.log(`usage: sandwich checkExpr [--dryrun] [--forceful] [--deep] [path ...]
 
 Starting at ~/.bun/install/global, run bun audit in every user-owned Bun
 package root, maintain its overrides block, and run bun update. Security fixes
@@ -506,7 +663,18 @@ checkExpr repairs an existing override when one compatible release can satisfy
 all consumers, but never falls through to an API-incompatible major. Project
 builds are left to the user, and blocked scripts are reported through bun pm
 untrusted. --dryrun audits and prints proposed overrides without writing or
-updating. Optional paths restrict the scan.`);
+updating. --forceful (-f) ignores the declared-range gate: when a version is
+manually declared so that no published release satisfies every installed
+consumer, it overrides the newest published non-vulnerable release anyway and
+still runs bun update, because the overrides block outranks declared ranges at
+resolution time. With --dryrun it prints those packages as upgrades instead of
+unresolved advisories. --deep explains a blocker: for each package it cannot
+place it searches this project's, then that package's, GitHub issue tracker with
+filters left off, scrapes the top result through the firecrawl CLI, and cats the
+conversation between its Conversation and Footer markers with GitHub's page
+chrome removed. --deep exits nonzero when nothing was blocked, and without it a
+blocker prints the --dryrun --deep command to run in that directory. Optional
+paths restrict the scan.`);
 }
 
 const args = process.argv.slice(2);
@@ -515,7 +683,10 @@ if (args.some((argument) => ["-h", "--help", "help"].includes(argument))) {
   process.exit(0);
 }
 const dryRun = args.includes("--dryrun");
-const paths = args.filter((argument) => argument !== "--dryrun");
+const force = args.includes("--forceful") || args.includes("-f");
+const deep = args.includes("--deep");
+const mode: Mode = { dryRun, force, deep };
+const paths = args.filter((argument) => !["--dryrun", "--forceful", "-f", "--deep"].includes(argument));
 
 let roots: string[];
 try {
@@ -526,6 +697,10 @@ try {
 }
 
 const totals = { clean: 0, planned: 0, updated: 0, failed: 0 };
-for (const root of roots) totals[check(root, dryRun)]++;
+for (const root of roots) totals[check(root, mode)]++;
 console.log(`\ncheckExpr: ${roots.length} roots; ${totals.clean} clean, ${totals.planned} planned, ${totals.updated} updated, ${totals.failed} failed`);
+if (deep && blockerCount === 0) {
+  console.error("sandwich: --deep explains a blocker, and nothing was blocked");
+  process.exit(1);
+}
 process.exit(totals.failed ? 1 : 0);

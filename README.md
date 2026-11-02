@@ -181,7 +181,21 @@ Existing unrelated overrides are preserved. Sandwich does not invoke a project
 build or trust blocked dependency scripts; it reports the project's build hooks
 and tells you when `bun pm untrusted` needs review.
 Use `sandwich checkExpr --dryrun` to print the proposed overrides without
-changing manifests, locks, or installed modules.
+changing manifests, locks, or installed modules. `--forceful` (`-f`) drops the
+declared-range gate: when a version is manually declared so that no published
+release satisfies every installed consumer, the newest published non-vulnerable
+release goes into `overrides` anyway and `bun update` still runs, because the
+overrides block outranks declared ranges at resolution time. Combined with
+`--dryrun` it prints that package as a proposed upgrade instead of an
+unresolved advisory.
+
+`sandwich checkExpr --deep` explains a blocker. For every package it cannot place
+it searches this project's GitHub repository, then the package's own repository,
+at `/issues?q=<package>` with filters left off, takes the top result, and cats
+that conversation after removing GitHub's page chrome. It reads pages through the
+`firecrawl` CLI and the npm registry metadata only: no package file is ever
+downloaded. `--deep` exits nonzero when nothing was blocked, and a blocked run
+without `--deep` prints the `--dryrun --deep` command to run in that directory.
 
 Repository owners can reuse the same Git maintenance engine without copying it
 into Diogenes or each integration. `sandwich repository audit` fetches the
