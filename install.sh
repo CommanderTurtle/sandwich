@@ -16,7 +16,7 @@ Usage: ./install.sh [--check] [--upgrade-bun] [--with-hermes] [--purge-foreign]
   --upgrade-bun   update an existing Bun stable installation first
   --with-hermes   verify an existing official Hermes install through Sandwich;
                   this never changes Hermes source
-  --purge-foreign remove Debian Node packages and known user Node managers
+  --purge-foreign remove Debian or pacman Node packages and known user Node managers
                   after an exact interactive confirmation
 
 The default install is user-scoped. Existing command shims and shell files are
@@ -38,13 +38,15 @@ done
 
 export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
 export DO_NOT_TRACK=1
-bun="$BUN_INSTALL/bin/bun"
+source "$root/lib/bun-runtime.sh"
+bun="$(sandwich_bun_runtime || true)"
 
 if [[ "$mode" == check ]]; then
-    if [[ -x "$bun" ]]; then
-        printf 'Bun %s (%s)\n' "$("$bun" --version)" "$("$bun" --revision)"
+    if [[ -n "$bun" && -x "$bun" ]]; then
+        printf 'Bun %s (%s, via %s)\n' \
+            "$("$bun" --version)" "$("$bun" --revision)" "$(sandwich_bun_runtime_source "$bun")"
     else
-        printf 'Bun is not installed at %s\n' "$bun"
+        printf 'Bun is not installed; install it with `mise use -g bun@latest` or the official script\n'
     fi
     if [[ -f "$root/node_modules/amaro/package.json" ]]; then
         printf 'Amaro dependency is installed\n'
@@ -68,8 +70,24 @@ if [[ ! -x "$bun" ]]; then
     }
     printf 'Installing Bun from the official installer...\n'
     curl -fsSL https://bun.com/install | bash
+    bun="$(sandwich_bun_runtime || true)"
+    [[ -n "$bun" ]] || {
+        printf 'sandwich: the Bun installer left no runnable bun on PATH or in %s\n' "$BUN_INSTALL" >&2
+        exit 1
+    }
 elif [[ "$upgrade_bun" -eq 1 ]]; then
-    "$bun" upgrade --stable
+    # A manager-owned Bun keeps its version in the manager; `bun upgrade` would
+    # rewrite the tracked directory and leave the two out of step.
+    if [[ "$(sandwich_bun_runtime_source "$bun")" == mise ]]; then
+        printf '  upgrading Bun through Mise\n'
+        command -v mise >/dev/null || {
+            printf 'sandwich: mise not found; cannot upgrade the managed Bun\n' >&2
+            exit 1
+        }
+        mise upgrade bun
+    else
+        "$bun" upgrade --stable
+    fi
 fi
 
 (

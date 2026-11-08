@@ -22,4 +22,11 @@ sandwich_prepend_path "$BUN_INSTALL_BIN"
 sandwich_prepend_path "$HOME/.local/bin"
 export PATH
 unset -f sandwich_prepend_path
+
+# Sudo runs its command through sudoers' secure_path, which never sees the two
+# directories above, so `sudo sandwich` would not resolve. Pass the PATH that
+# already works instead of editing root's sudoers.
+sudo() {
+    command sudo env PATH="$PATH" "$@"
+}
 # <<< sandwich <<<

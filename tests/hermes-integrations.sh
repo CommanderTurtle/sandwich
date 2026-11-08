@@ -7,6 +7,9 @@ fixture="$(mktemp -d)"
 trap 'rm -rf -- "$fixture"' EXIT
 export HOME="$fixture/home"
 export BUN_INSTALL="$HOME/.bun"
+# The fixture's stand-in Bun is the runtime under test; the resolver would
+# otherwise prefer this machine's manager-managed copy.
+export SANDWICH_BUN="$BUN_INSTALL/bin/bun"
 export SANDWICH_ENV_FILE="$fixture/.env"
 export SANDWICH_HERMES_STATE_DIR="$fixture/state"
 export HERMES_LIVE_DIR="$fixture/live"

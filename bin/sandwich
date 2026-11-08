@@ -5,14 +5,16 @@ source "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/../lib/common.sh"
 doctor() {
     local failures=0 capability_failures=0
     local command_path name native effective
+    local bun_version bun_revision
+    bun_version="$("$SANDWICH_BIN" --version 2>/dev/null || printf 'unresponsive')"
+    bun_revision="$("$SANDWICH_BIN" --revision 2>/dev/null || printf 'unknown')"
 
     printf 'Sandwich\n'
     printf '  version:   %s\n' "$("$SANDWICH_ROOT/bin/sandwich" --version)"
     printf '  mode:      %s\n' "$SANDWICH_MODE"
-    printf '  bun:       %s (%s, %s)\n' \
-        "$SANDWICH_BIN" \
-        "$("$SANDWICH_BIN" --version)" \
-        "$("$SANDWICH_BIN" --revision)"
+    printf '  bun:       %s (%s, %s, via %s)\n' \
+        "$SANDWICH_BIN" "$bun_version" "$bun_revision" \
+        "$(sandwich_bun_runtime_source "$SANDWICH_BIN")"
     printf '  node API:  %s\n' \
         "$("$SANDWICH_BIN" -e 'process.stdout.write(process.version + " / Bun " + Bun.version)')"
     if strip_probe="$(env SANDWICH_MODE=shadow "$SANDWICH_ROOT/bin/node" --input-type=module -e '
@@ -30,8 +32,47 @@ doctor() {
     printf '  global:    %s\n' "$BUN_INSTALL_GLOBAL_DIR"
     printf '  globalbin: %s\n' "$BUN_INSTALL_BIN"
     printf '  telemetry: DO_NOT_TRACK=%s\n' "${DO_NOT_TRACK:-unset}"
-    printf '  labels:    npm %s / pnpm %s / yarn %s (Bun compatibility, not native installs)\n' \
-        "$SANDWICH_NPM_VERSION" "$SANDWICH_PNPM_VERSION" "$SANDWICH_YARN_VERSION"
+    # Refreshed from the directories every run, never remembered and never
+    # installed: the label states what Bun presents, the disk entry is whatever a
+    # package manager or the system actually has in place right now.
+    local -a label_names=(npm pnpm yarn)
+    local -a label_values=("$SANDWICH_NPM_VERSION" "$SANDWICH_PNPM_VERSION" "$SANDWICH_YARN_VERSION")
+    local disk="" disk_version="" disk_source="" disk_origin="" index=0
+    printf '  labels:    '
+    for index in 0 1 2; do
+        disk="$(bs_declared_version "${label_names[index]}" || true)"
+        if [[ -n "$disk" ]]; then
+            disk_version="${disk%%$'\t'*}"
+            disk_source="${disk#*$'\t'}"
+            case "$disk_source" in
+                "$SANDWICH_MISE_DATA/installs/"*) disk_origin=mise ;;
+                /usr/lib/node_modules/*) disk_origin=system ;;
+                "$BUN_INSTALL_GLOBAL_DIR/node_modules/"*) disk_origin="bun global" ;;
+                *) disk_origin=disk ;;
+            esac
+            printf '%s %s (disk %s via %s)' \
+                "${label_names[index]}" "${label_values[index]}" "$disk_version" "$disk_origin"
+        else
+            printf '%s %s (no native %s on disk)' \
+                "${label_names[index]}" "${label_values[index]}" "${label_names[index]}"
+        fi
+        [[ "$index" -eq 2 ]] || printf ' / '
+    done
+    printf '\n'
+    local declared_bun="" declared_node="" managers_bun="" managers_node=""
+    declared_bun="$(bs_declared_version bun || true)"
+    declared_node="$(bs_declared_version node || true)"
+    managers_bun="${declared_bun%%$'\t'*}"
+    [[ -n "$managers_bun" ]] || managers_bun=unknown
+    managers_node="${declared_node%%$'\t'*}"
+    [[ -n "$managers_node" ]] || managers_node=unknown
+    printf '  managers:  bun %s / node %s (declared by the manager directories)\n' \
+        "$managers_bun" "$managers_node"
+    if [[ -n "$declared_bun" && "$managers_bun" != "$bun_version" ]]; then
+        printf '  drift:     the running Bun is %s but the manager declares %s\n' \
+            "$bun_version" "$managers_bun"
+        printf '    fix:       mise upgrade bun, then sandwich reshadow\n'
+    fi
 
     for name in sandwich node npm npx pnpm yarn corepack; do
         command_path="$(command -v "$name" 2>/dev/null || true)"
@@ -53,6 +94,27 @@ doctor() {
     done
 
     printf '  source:    %s\n' "$SANDWICH_ROOT"
+    # A runtime binary inside the global bin directory shadows the manager's copy:
+    # that directory holds Sandwich's shims, so the shell block puts it first.
+    local foreign foreign_name foreign_version
+    local -a foreign_names=(bun bunx node npm npx pnpm pnpx yarn yarnpkg corepack)
+    for foreign_name in "${foreign_names[@]}"; do
+        foreign="$BUN_INSTALL_BIN/$foreign_name"
+        [[ -e "$foreign" || -L "$foreign" ]] || continue
+        bs_is_shim "$foreign" && continue
+        foreign_version="$("$foreign" --version 2>/dev/null | head -1)" || foreign_version="unversioned"
+        printf '  foreign bin: %s (%s)\n' "$foreign" "$foreign_version"
+        printf '    fix:       remove it; %s owns %s and this directory leads PATH\n' \
+            "$(sandwich_bun_runtime_source "$SANDWICH_BIN")" "$foreign_name"
+    done
+    # The manager's runtime is authoritative; a forced or leftover copy elsewhere
+    # drifts silently the next time the manager updates.
+    if [[ "$SANDWICH_BIN" != "$SANDWICH_MISE_DATA/"* && -x "$SANDWICH_MISE_DATA/installs/bun/latest/bin/bun" ]]; then
+        printf '  stale runtime: %s\n' "$SANDWICH_BIN"
+        printf '    fix:       unset SANDWICH_BUN or run mise upgrade bun, then sandwich reshadow\n'
+    fi
+    local -a retained=()
+    local system_path="" candidate=""
     for name in node npm npx pnpm yarn corepack; do
         system_path=""
         for candidate in "/usr/local/bin/$name" "/usr/bin/$name" "/bin/$name"; do
@@ -63,14 +125,68 @@ doctor() {
         done
         if [[ -n "$system_path" ]]; then
             printf '  shadowed:  %-8s %s\n' "$name" "$system_path"
+            local owner_line="" package="" dependents="" seen=0
+            owner_line="$(bs_package_owner "$system_path" || true)"
+            [[ -n "$owner_line" ]] || continue
+            package="${owner_line%%|*}"
+            dependents="${owner_line#*|}"
+            [[ -n "$dependents" ]] || continue
+            for existing in "${retained[@]}"; do
+                [[ "$existing" == "$package "* ]] && seen=1 && break
+            done
+            ((seen)) || retained+=("$package (required by: $dependents)")
         fi
     done
+    if ((${#retained[@]})); then
+        printf '  retained:  %s\n' "${retained[@]}"
+        printf '    note:    its packager pins this runtime; the shims shadow it. sandwich unshadow uses it again\n'
+    fi
+    # Unexecute removes the execute bit from the natives. A package update puts
+    # it back, and that is when the shadow starts leaking to absolute-path callers.
+    local unexecuted_path=""
+    if [[ -f "$SANDWICH_CONFIG_DIR/unexecuted" ]]; then
+        while IFS= read -r unexecuted_path; do
+            [[ -n "$unexecuted_path" ]] || continue
+            if [[ -x "$unexecuted_path" ]]; then
+                printf '  re-armed:  %s (the execute bit came back)\n' "$unexecuted_path"
+                printf '    fix:       sudo sandwich shadow --unexecute\n'
+            else
+                printf '  inert:     %s\n' "$unexecuted_path"
+            fi
+        done <"$SANDWICH_CONFIG_DIR/unexecuted"
+    fi
 
     if [[ -f "$HOME/package.json" ]]; then
         printf '  warning:   %s is a package root (likely accidental non-global installs)\n' "$HOME/package.json"
     fi
     if [[ -e "$HOME/.bunfig.toml" ]]; then
         printf '  bunfig:    %s\n' "$HOME/.bunfig.toml"
+    fi
+
+    # A second installed Bun global root is a duplicate left behind when the
+    # prefix moved; whatever it holds is what a launcher on PATH actually runs.
+    if [[ -n "$SANDWICH_BUN_STALE_ROOTS" ]]; then
+        local stale_root stale_names stale_ranges stale_line stale_list
+        IFS=: read -r -a stale_list <<<"$SANDWICH_BUN_STALE_ROOTS"
+        for stale_root in "${stale_list[@]}"; do
+            [[ -n "$stale_root" ]] || continue
+            printf '  second root: %s\n' "$stale_root"
+            if stale_line="$("$SANDWICH_BIN" -e \
+                'const m = await Bun.file(process.argv[1]).json();
+                 const e = Object.entries(m.dependencies ?? {});
+                 process.stdout.write(e.map(([name]) => name).join(" ") + "\t" + e.map(([name, range]) => `${name}@${range}`).join(", "));' \
+                "$stale_root/package.json" 2>/dev/null)"; then
+                IFS=$'\t' read -r stale_names stale_ranges <<<"$stale_line"
+                printf '    packages:  %s\n' "${stale_ranges:-none}"
+                if [[ -n "$stale_names" ]]; then
+                    printf '    fix:       bun install -g %s   # in %s, then retire %s and its PATH entry\n' \
+                        "$stale_names" "$BUN_INSTALL_GLOBAL_DIR" "$stale_root"
+                fi
+            else
+                printf '    fix:       reinstall its packages into %s, then retire %s and its PATH entry\n' \
+                    "$BUN_INSTALL_GLOBAL_DIR" "$stale_root"
+            fi
+        done
     fi
 
     if ((failures || capability_failures)); then
@@ -91,9 +207,35 @@ case "${1:-doctor}" in
         shift
         exec bash "$SANDWICH_ROOT/scripts/shadow.sh" "$mode" "$@"
         ;;
+    reshadow)
+        exec bash "$SANDWICH_ROOT/scripts/install-user.sh" --reshadow
+        ;;
     resolve)
         shift
         exec "$SANDWICH_BIN" "$SANDWICH_ROOT/scripts/resolve.ts" "$@"
+        ;;
+    bunRoot)
+        shift
+        case "${1:-}" in
+            "")
+                printf '%s\n' "$BUN_INSTALL_GLOBAL_DIR"
+                ;;
+            --all)
+                printf '%s\n' "$BUN_INSTALL_GLOBAL_DIR"
+                if [[ -n "$SANDWICH_BUN_STALE_ROOTS" ]]; then
+                    IFS=: read -r -a all_roots <<<"$SANDWICH_BUN_STALE_ROOTS"
+                    for root in "${all_roots[@]}"; do
+                        [[ -n "$root" ]] && printf '%s\n' "$root"
+                    done
+                fi
+                ;;
+            -h|--help)
+                printf 'usage: sandwich bunRoot [--all]\n'
+                ;;
+            *)
+                bs_die "usage: sandwich bunRoot [--all]"
+                ;;
+        esac
         ;;
     doctor|status)
         doctor
@@ -149,12 +291,15 @@ case "${1:-doctor}" in
         ;;
     help|--help|-h)
         cat <<'EOF'
-usage: sandwich [doctor|shadow|unshadow|resolve|audit|checkExpr|checkFence|checkZoo|hermes|integrations|repository|version|help]
+usage: sandwich [doctor|shadow|unshadow|reshadow|resolve|bunRoot|audit|checkExpr|checkFence|checkZoo|hermes|integrations|repository|version|help]
 
   sandwich doctor  verify Bun and every compatibility shim
   sandwich shadow  prefer Bun compatibility shims (prints current-shell activation)
+  sandwich shadow --unexecute  also remove the execute bit on the native binaries (sudo; --unexecute=off restores)
   sandwich unshadow  forward compatibility commands to native/mise commands
+  sandwich reshadow  re-establish the shadow after mise upgrade, mup, or omarchy update
   sandwich resolve [--dry-run]  refresh stable npm/pnpm/yarn compatibility labels
+  sandwich bunRoot [--all]  print the one Bun global root in use, then duplicates
   sandwich audit   report foreign JavaScript runtimes without changing them
   sandwich checkExpr     audit Bun package roots, override vulnerabilities,
                          and run bun update without running project builds;
@@ -180,6 +325,6 @@ to reapply the integrations configured in Sandwich's .env.
 EOF
         ;;
     *)
-        bs_die "usage: sandwich [doctor|shadow|unshadow|resolve|audit|checkExpr|checkFence|checkZoo|hermes|integrations|repository|version|help]"
+        bs_die "usage: sandwich [doctor|shadow|unshadow|reshadow|resolve|bunRoot|audit|checkExpr|checkFence|checkZoo|hermes|integrations|repository|version|help]"
         ;;
 esac

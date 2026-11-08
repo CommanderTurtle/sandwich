@@ -35,6 +35,26 @@
       "mutating": false,
       "human_confirmation": false
     },
+    "bun_root": {
+      "argv": ["bin/sandwich", "bunRoot"],
+      "mutating": false,
+      "human_confirmation": false
+    },
+    "reshadow": {
+      "argv": ["bin/sandwich", "reshadow"],
+      "mutating": true,
+      "human_confirmation": false
+    },
+    "shadow_unexecute": {
+      "argv": ["bin/sandwich", "shadow", "--unexecute"],
+      "mutating": true,
+      "human_confirmation": true
+    },
+    "shadow_unexecute_off": {
+      "argv": ["bin/sandwich", "shadow", "--unexecute=off"],
+      "mutating": true,
+      "human_confirmation": true
+    },
     "doctor": {
       "argv": ["bin/sandwich", "doctor"],
       "mutating": false,

@@ -75,6 +75,7 @@ workflow.
 
 ```bash
 sandwich doctor  # verify Bun and every compatibility shim
+sandwich bunRoot --all  # print the Bun global root in use, then duplicates
 sandwich audit   # report foreign JavaScript runtimes without changing them
 sandwich checkExpr      # audit every Bun root, repair overrides, bun update
 sandwich checkFence --dryrun  # audit Cargo projects and installed binaries
@@ -97,11 +98,26 @@ sandwich repository update ...   # prepare a verified owner branch; never push i
 ```bash
 sandwich doctor                         # exact paths, runtime capability, mode
 sandwich shadow                         # persist Bun compatibility mode
+sudo sandwich shadow --unexecute        # remove the execute bit on the native binaries
 eval "$(sandwich shadow --shell=bash)"   # activate in the current Bash shell
-sandwich unshadow                       # persist native/mise forwarding
+sandwich reshadow                        # re-verify and repair the shadow in place
+sandwich unshadow                        # persist native/mise forwarding
 sandwich resolve --dry-run               # inspect current stable release labels
 sandwich resolve                         # save the labels for later invocations
 ```
+
+Mise owns the runtimes Omarchy installs (`mise use -g bun@latest`), so it keeps
+updating them; Sandwich never copies or self-upgrades a managed runtime. The
+Bun it runs on is resolved in that order: an exported `SANDWICH_BUN`, the
+manager's copy, `mise shims/bun`, the command on `PATH`, then the Bun prefix's
+own bin. A leftover binary inside the global bin directory is reported by
+`doctor` as a `foreign bin`, because that directory holds the shims and leads
+`PATH`; `sandwich reshadow` retires it into its backup and rewrites the links,
+`~/.bunfig.toml`, and the shell block only where they drifted. Run
+`sandwich reshadow` after `mise upgrade`, `mup`, or `omarchy update` so a
+shadowed runtime is never left silently behind the manager's version.
+`./install.sh --upgrade-bun` upgrades through Mise when Mise owns Bun and then
+reapplies the same state.
 
 Use `--shell=zsh`, `--shell=fish`, or `--shell=powershell` to print activation
 code for those shells. Evaluate the emitted code in that shell (PowerShell:
@@ -113,13 +129,68 @@ modified. `unshadow` leaves Sandwich callable while its compatibility commands
 forward to the next non-Sandwich executable on PATH. Missing native commands
 fail explicitly; they never silently fall back to Bun. `hash -r` (Bash) or
 `rehash` (Zsh) clears command-location caches. An exported `SANDWICH_MODE`
-overrides the saved mode; unset it to return to the persistent setting.
+overrides the saved mode; unset it to return to the persistent setting. The block
+also defines `sudo() { command sudo env PATH="$PATH" "$@"; }`: sudo runs its
+command through sudoers' `secure_path`, which never sees the two directories the
+block prepends, so `sudo sandwich`, `sudo mise`, and anything else installed in
+them keep resolving without an absolute path and without editing root's sudoers.
+
+A native runtime under `/usr/bin` may be pinned by a package dependency, and
+Sandwich only reports it, never removes it: `doctor` prints it as `retained:`
+with the dependents its packager names (on Arch, `zed` requires both `nodejs`
+and `npm`), and the audit's `Arch:` line says the same, purging a pacman package
+only when nothing requires it. The shims shadow those binaries regardless, so
+`node`, `npm`, and `npx` still run on Bun; `unshadow` is what hands them back.
+
+PATH order can be reinforced, and the reinforcement is always stated:
+`sudo sandwich shadow --unexecute` removes the execute bit from the native binaries
+the shims replace, so even a program that never saw the shell's PATH cannot exec
+real Node — a fallback that would have run quietly now fails where it can be seen.
+The bit goes away on the file a packager's symlink points at (`/usr/bin/npm` and
+`/usr/lib/node_modules/npm/bin/npm-cli.js` are one entry, one record line),
+`~/.config/sandwich/unexecuted` lists exactly those paths before any of them
+changes, and only those paths get the bit back: `sandwich unshadow` restores it
+because forwarding needs an executable native, and `sandwich shadow --unexecute=off`
+restores it while staying in shadow mode. Plain `sandwich shadow` never touches a
+system binary, which is what keeps the mode switch safe to script. Those binaries
+belong to their packager, so `pacman -Qkk nodejs npm` reports the mode change and a
+package update re-arms the bit; `doctor` then prints `re-armed:` with
+`sudo sandwich shadow --unexecute` as the fix, and `install-user.sh --reshadow`
+reports the same drift (under root it re-applies it directly).
+`SANDWICH_UNEXECUTE_CHMOD` and `SANDWICH_NATIVE_DIRS` redirect the chmod and the
+scanned directories for rooted automation and tests.
 
 Doctor separates PATH conflicts from runtime failures and prints each offender
 and the expected path. Native/mise commands are valid in unshadow mode. The
 Windows dispatcher checks its own Bash environment, not PowerShell aliases;
 use `Get-Command node,npm,npx,pnpm,yarn,corepack -All` in the parent PowerShell
 when investigating an outer-shell conflict.
+
+Doctor's version numbers are re-read from the directories on every run, never
+remembered and never installed: `managers:` names the version each manager's
+install directory declares (Mise names the directory after the version and points
+`latest`/`global` at it), `labels:` pairs each Bun compatibility label with the
+version the system actually holds (`disk 11.20.0 via mise`, or `no native pnpm on
+disk`), and `drift:` appears when the running Bun is not the version the manager
+declares. No manager or runtime is executed to obtain those numbers and nothing
+is written; `sandwich resolve` remains the only thing that refreshes the labels,
+and it does so from the npm registry.
+
+The Bun global root is discovered on every run instead of assumed: an exported
+`BUN_INSTALL_GLOBAL_DIR` always wins, then bunfig's `[install] globalDir`
+(`install-user.sh` writes both `~/.bunfig.toml` and its `~/.bashrc` block from the
+prefix it resolved, so a prefix chosen by Mise, Omarchy, or XDG survives while a
+setting exported above the block stays in charge), then any `install/global` tree
+beside a `bin` directory already on `PATH`, then the `$BUN_INSTALL`, `~/.bun`, and
+`${XDG_CACHE_HOME:-~/.cache}/.bun` defaults. A candidate counts only when it holds
+`package.json` plus `node_modules` or a lockfile, so one root resolves unless an
+older prefix is still installed. `sandwich bunRoot` prints that root, `--all`
+appends the duplicates, and `doctor` names each duplicate, lists the packages it
+still provides, and prints the `bun install -g` command that moves them.
+`checkExpr` audits duplicates too, because a launcher on `PATH` can still execute
+from one. Owners that patch globally installed packages resolve
+`sandwich bunRoot` rather than hard-coding a prefix, so a moved prefix never
+leaves a patched copy behind.
 
 `resolve` fetches the stable npm `latest` dist-tags with a bounded request and
 saves validated versions atomically in

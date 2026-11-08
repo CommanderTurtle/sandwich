@@ -331,7 +331,7 @@ case "$command_name" in
         ;;
     prefix)
         if [[ "${1:-}" == "-g" || "${1:-}" == "--global" ]]; then
-            printf '%s\n' "$BUN_INSTALL"
+            bs_bun_global_prefix
         else
             bs_project_root
         fi
@@ -360,7 +360,7 @@ case "$command_name" in
         [[ "${1:-}" == "get" ]] || bs_die "only read-only 'npm config get' is supported"
         case "${2:-}" in
             registry) printf '%s\n' 'https://registry.npmjs.org/' ;;
-            prefix) printf '%s\n' "$BUN_INSTALL" ;;
+            prefix) printf '%s\n' "$(bs_bun_global_prefix)" ;;
             cache) exec "$SANDWICH_BIN" pm cache ;;
             user-agent)
                 printf 'npm/%s node/%s bun/%s linux x64\n' \

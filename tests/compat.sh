@@ -5,7 +5,11 @@ set -euo pipefail
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 export SANDWICH_TEST_ROOT="$root"
 export PATH="$root/bin:$HOME/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-export SANDWICH_BUN="${SANDWICH_BUN:-$HOME/.bun/bin/bun}"
+if [[ -z "${SANDWICH_BUN:-}" ]]; then
+    source "$root/lib/bun-runtime.sh"
+    SANDWICH_BUN="$(sandwich_bun_runtime || printf '%s/bin/bun' "$HOME/.bun")"
+fi
+export SANDWICH_BUN
 export DO_NOT_TRACK=1
 
 passed=0
@@ -53,6 +57,9 @@ check "component manifest matches CLI version" \
         if (manifest.operations.integrations_reconcile.human_confirmation !== true) process.exit(1);
         if (manifest.operations.integrations_update.maintenance_window !== true) process.exit(1);
         if (manifest.operations.repository_audit.mutating !== false) process.exit(1);
+        if (manifest.operations.shadow_unexecute.human_confirmation !== true) process.exit(1);
+        if (manifest.operations.shadow_unexecute_off.mutating !== true) process.exit(1);
+        if (manifest.operations.reshadow.human_confirmation !== false) process.exit(1);
         if (manifest.operations.repository_update.human_confirmation !== true) process.exit(1);
         if (manifest.operations.hermes_check.mutating !== false) process.exit(1);
         if (manifest.operations.check_expr.human_confirmation !== true) process.exit(1);
@@ -154,6 +161,40 @@ check "npx uses bunx with Bun runtime" \
 check "npm version is valid semver" matches "$(npm --version)" '^[0-9]+\.[0-9]+\.[0-9]+$'
 check "npx version matches npm compatibility version" equals "$(npx --version)" "$(npm --version)"
 check "corepack resolves to Sandwich" contains "$(corepack --version)" "sandwich-"
+
+# Bun global root resolution: bunfig's globalDir wins, an installed prefix that
+# launchers on PATH still execute from is reported as a duplicate, and neither
+# answer is baked from BUN_INSTALL.
+bun_root_check() {
+    local fixture lines doctor
+    fixture="$(mktemp -d)"
+    mkdir -p "$fixture/primary/install/global" "$fixture/primary/bin" \
+        "$fixture/legacy/bin" "$fixture/legacy/install/global"
+    printf '{"name":"primary","dependencies":{"a":"1.0.0"}}\n' >"$fixture/primary/install/global/package.json"
+    printf '{"name":"legacy","dependencies":{"b":"1.0.0"}}\n' >"$fixture/legacy/install/global/package.json"
+    : >"$fixture/primary/install/global/bun.lock"
+    : >"$fixture/legacy/install/global/bun.lock"
+    cat >"$fixture/bunfig.toml" <<EOF
+telemetry = false
+
+[install]
+globalDir = "$fixture/primary/install/global"
+globalBinDir = "$fixture/primary/bin"
+EOF
+    mapfile -t lines < <(
+        SANDWICH_BUNFIG="$fixture/bunfig.toml" BUN_INSTALL= BUN_INSTALL_GLOBAL_DIR= \
+            PATH="$fixture/legacy/bin:$PATH" sandwich bunRoot --all
+    )
+    equals "${lines[0]}" "$fixture/primary/install/global" || { rm -rf "$fixture"; return 1; }
+    equals "${lines[1]}" "$fixture/legacy/install/global" || { rm -rf "$fixture"; return 1; }
+    doctor="$(
+        SANDWICH_BUNFIG="$fixture/bunfig.toml" BUN_INSTALL= BUN_INSTALL_GLOBAL_DIR= \
+            PATH="$fixture/legacy/bin:$PATH" sandwich doctor 2>&1
+    )" || true
+    rm -rf "$fixture"
+    contains "$doctor" "second root: $fixture/legacy/install/global"
+}
+check "bunRoot resolves bunfig's root and reports a duplicate prefix" bun_root_check
 
 integration_fixture="$fixture/integrations"
 integration_projects="$integration_fixture/Hermes"
@@ -435,6 +476,81 @@ check "npm ci keeps its frozen compatibility lock outside the project" \
 check "user installer check is read-only and succeeds" "$root/scripts/install-user.sh" --check
 check "foreign runtime audit is read-only and succeeds" \
     "$root/scripts/purge-foreign-runtimes.sh" --check
+
+# Unexecute: the shims have to win even against a caller that never saw the
+# shell's PATH. SANDWICH_UNEXECUTE_CHMOD keeps the fixture unprivileged and
+# SANDWICH_NATIVE_DIRS keeps it out of the system directories.
+unexec_bin="$fixture/unexecute"
+unexec_config="$fixture/unexecute-config"
+mkdir -p "$unexec_bin" "$unexec_config"
+printf '#!/bin/sh\nexit 0\n' >"$unexec_bin/node"
+printf '#!/bin/sh\nexit 0\n' >"$unexec_bin/npm"
+chmod 755 "$unexec_bin/node" "$unexec_bin/npm"
+unexec_node="$(readlink -f -- "$unexec_bin/node")"
+unexec_run() {
+    env SANDWICH_CONFIG_HOME="$unexec_config" SANDWICH_NATIVE_DIRS="$unexec_bin" \
+        SANDWICH_UNEXECUTE_CHMOD=chmod DO_NOT_TRACK=1 \
+        bash "$root/scripts/shadow.sh" "$@" >/dev/null
+}
+unexec_rerun() {
+    unexec_run shadow --unexecute
+    [[ "$(wc -l <"$unexec_config/unexecuted")" -eq 2 ]]
+}
+unexec_dry_run() {
+    chmod 755 "$unexec_bin/npm"
+    unexec_run shadow --unexecute --dry-run
+    [[ -x "$unexec_bin/npm" ]]
+}
+unexec_off_keeps_shadow() {
+    unexec_run shadow --unexecute
+    [[ ! -x "$unexec_bin/node" ]] || return 1
+    unexec_run shadow --unexecute=off
+    [[ -x "$unexec_bin/node" && "$(cat "$unexec_config/mode")" == shadow && ! -e "$unexec_config/unexecuted" ]]
+}
+unexec_plain_is_explicit() {
+    unexec_run shadow --unexecute
+    chmod 755 "$unexec_bin/node"
+    unexec_run shadow
+    [[ -x "$unexec_bin/node" ]]
+}
+check "shadow --unexecute removes the native execute bit" unexec_run shadow --unexecute
+check "unexecute leaves the native binary non-executable" test ! -x "$unexec_bin/node"
+check "unexecute records the resolved binary, not the symlink" \
+    contains "$(cat "$unexec_config/unexecuted")" "$unexec_node"
+check "unexecute rerun keeps one record per binary" unexec_rerun
+check "unexecute dry run leaves the execute bit alone" unexec_dry_run
+check "unshadow restores the native execute bit" unexec_run unshadow
+check "unshadow restores every recorded binary" test -x "$unexec_bin/node"
+check "unshadow clears the unexecute record" test ! -e "$unexec_config/unexecuted"
+check "shadow --unexecute=off restores the bit and stays in shadow mode" unexec_off_keeps_shadow
+check "plain shadow changes no system binary on its own" unexec_plain_is_explicit
+doctor_reports_inert() {
+    local record="$fixture/unexecute-doctor" output=""
+    mkdir -p "$record"
+    chmod 644 "$unexec_bin/node"
+    printf '%s\n' "$unexec_node" >"$record/unexecuted"
+    output="$(env SANDWICH_CONFIG_HOME="$record" bash "$root/bin/sandwich" doctor 2>&1)"
+    [[ "$output" == *"inert:     $unexec_node"* ]]
+}
+check "doctor reports an inert native binary" doctor_reports_inert
+
+# Doctor reads the versions a manager's directories declare instead of
+# remembering them, so an update by the manager is visible without Sandwich
+# running or changing anything.
+declared_fixture="$fixture/declared-versions"
+mkdir -p "$declared_fixture/installs/bun/9.9.9/bin" "$declared_fixture/installs/node/1.2.3/lib/node_modules/npm"
+ln -s "$(readlink -f -- "$SANDWICH_BUN")" "$declared_fixture/installs/bun/9.9.9/bin/bun"
+ln -s ./9.9.9 "$declared_fixture/installs/bun/latest"
+ln -s ./1.2.3 "$declared_fixture/installs/node/latest"
+printf '{\n  "name": "npm",\n  "version": "4.5.6"\n}\n' \
+    >"$declared_fixture/installs/node/1.2.3/lib/node_modules/npm/package.json"
+doctor_output="$(env MISE_DATA_DIR="$declared_fixture" DO_NOT_TRACK=1 bash "$root/bin/sandwich" doctor 2>&1)"
+check "doctor prints the versions the manager directories declare" \
+    contains "$doctor_output" "managers:  bun 9.9.9 / node 1.2.3"
+check "doctor reports the manager's npm version as what is on disk" \
+    contains "$doctor_output" "(disk 4.5.6 via mise)"
+check "doctor flags a running Bun that is not the declared version" \
+    matches "$doctor_output" 'drift:.*manager declares 9\.9\.9'
 for retired in \
     "$root/config/hermes.bun.lock" \
     "$root/config/hermes.bunfig.toml" \

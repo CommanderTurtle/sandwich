@@ -115,6 +115,13 @@ function rootsFor(paths: string[]): string[] {
   const roots = new Set<string>();
   if (paths.length === 0) {
     if (existsSync(join(globalRoot, "package.json")) && hasBunLock(globalRoot)) roots.add(globalRoot);
+    // A duplicate global root that a launcher on PATH still executes from is
+    // live even though the resolved root moved on; Sandwich reports it in doctor
+    // and audits it here so it never keeps an unpatched dependency.
+    for (const stale of (process.env.SANDWICH_BUN_STALE_ROOTS ?? "").split(":").filter(Boolean)) {
+      const root = resolve(stale);
+      if (existsSync(join(root, "package.json")) && hasBunLock(root)) roots.add(root);
+    }
     for (const root of scan(home)) roots.add(root);
   } else {
     for (const input of paths) {
