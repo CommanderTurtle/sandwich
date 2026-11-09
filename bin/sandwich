@@ -149,7 +149,7 @@ doctor() {
             [[ -n "$unexecuted_path" ]] || continue
             if [[ -x "$unexecuted_path" ]]; then
                 printf '  re-armed:  %s (the execute bit came back)\n' "$unexecuted_path"
-                printf '    fix:       sudo sandwich shadow --unexecute\n'
+                printf '    fix:       sandwich shadow --unexecute\n'
             else
                 printf '  inert:     %s\n' "$unexecuted_path"
             fi
@@ -295,7 +295,7 @@ usage: sandwich [doctor|shadow|unshadow|reshadow|resolve|bunRoot|audit|checkExpr
 
   sandwich doctor  verify Bun and every compatibility shim
   sandwich shadow  prefer Bun compatibility shims (prints current-shell activation)
-  sandwich shadow --unexecute  also remove the execute bit on the native binaries (sudo; --unexecute=off restores)
+  sandwich shadow --unexecute  also clear the execute bit on the native binaries (asks for a password; --unexecute=off restores)
   sandwich unshadow  forward compatibility commands to native/mise commands
   sandwich reshadow  re-establish the shadow after mise upgrade, mup, or omarchy update
   sandwich resolve [--dry-run]  refresh stable npm/pnpm/yarn compatibility labels

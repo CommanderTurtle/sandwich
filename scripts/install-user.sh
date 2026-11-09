@@ -72,9 +72,9 @@ if ! grep -Fq "BUN_INSTALL_GLOBAL_DIR:-\"$global_dir\"" "$bashrc" 2>/dev/null; t
     drift=1
     drift_reasons+=("$bashrc block does not pin BUN_INSTALL_GLOBAL_DIR to $global_dir")
 fi
-# Unexecute is the user's decision, recorded by `sudo sandwich shadow
-# --unexecute`; a package update re-arms the native binaries, and only root can
-# disarm them again.
+# Unexecute is the user's decision, recorded by `sandwich shadow
+# --unexecute`; a package update re-arms the native binaries, and re-running the
+# command asks for the password it needs to disarm them again.
 if [[ -f "$SANDWICH_CONFIG_DIR/unexecuted" ]]; then
     while IFS= read -r unexecuted_path; do
         [[ -n "$unexecuted_path" ]] || continue
@@ -84,7 +84,7 @@ if [[ -f "$SANDWICH_CONFIG_DIR/unexecuted" ]]; then
             printf '  inert:    %s (a package update restored the execute bit)\n' "$unexecuted_path"
         else
             drift=1
-            drift_reasons+=("native binary is executable again: $unexecuted_path (sudo sandwich shadow --unexecute)")
+            drift_reasons+=("native binary is executable again: $unexecuted_path (sandwich shadow --unexecute)")
         fi
     done <"$SANDWICH_CONFIG_DIR/unexecuted"
 fi

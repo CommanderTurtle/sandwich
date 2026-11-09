@@ -62,18 +62,54 @@ unexec_targets() {
     done
 }
 
-unexec_chmod() {
-    local mode="$1" file="$2"
+# Apply one mode change to a list of files, escalating only where a file is not
+# ours to change. One sudo prompt covers the whole list, and a prompt that cannot
+# be answered stops the command before anything on the machine changes.
+unexec_apply() {
+    local mode="$1" hint="$2" file owner me
+    shift 2
+    (($#)) || return 0
     if ((${#unexec_command[@]})); then
-        "${unexec_command[@]}" "$mode" "$file"
-    elif ((EUID == 0)); then
-        chmod "$mode" "$file"
-    elif command -v sudo >/dev/null 2>&1; then
-        sudo chmod "$mode" "$file"
-    else
-        printf 'sandwich: root is required to %s %s (or set SANDWICH_UNEXECUTE_CHMOD)\n' "$mode" "$file" >&2
-        return 1
+        "${unexec_command[@]}" "$mode" "$@"
+        return
     fi
+    local -a mine=() rootly=()
+    me="$(id -u)"
+    for file in "$@"; do
+        # Only files whose bit actually differs need a chmod, so re-running this
+        # command needs no root at all.
+        if [[ "$mode" == a-x && ! -x "$file" ]]; then continue; fi
+        if [[ "$mode" == a+x && -x "$file" ]]; then continue; fi
+        owner="$(stat -c '%u' -- "$file" 2>/dev/null || printf '')"
+        if ((EUID == 0)) || [[ "$owner" == "$me" ]]; then
+            mine+=("$file")
+        else
+            rootly+=("$file")
+        fi
+    done
+    if ((${#mine[@]})); then
+        chmod "$mode" -- "${mine[@]}"
+    fi
+    if ((${#rootly[@]})); then
+        command -v sudo >/dev/null 2>&1 || {
+            unexec_needs_root "$hint" "${rootly[@]}"
+            return 1
+        }
+        unexec_note "root:     ${#rootly[@]} files belong to their packager; sudo will ask for a password" || true
+        sudo -v || {
+            unexec_needs_root "$hint" "${rootly[@]}"
+            return 1
+        }
+        sudo chmod "$mode" -- "${rootly[@]}"
+    fi
+}
+
+unexec_needs_root() {
+    local hint="$1" file
+    shift
+    printf 'sandwich: root is needed for:\n' >&2
+    for file in "$@"; do printf '            %s\n' "$file" >&2; done
+    printf '        %s\n' "$hint" >&2
 }
 
 # State written by root stays owned by the user who ran the command.
@@ -109,15 +145,12 @@ if ((dry_run)); then
 fi
 mkdir -p -- "$config"
 unexec_own "$config"
-temporary="$(mktemp "$config/.mode.XXXXXX")"
-trap 'rm -f -- "$temporary"' EXIT
-printf '%s\n' "$mode" >"$temporary"
-mv -f -- "$temporary" "$config/mode"
-unexec_own "$config/mode"
-trap - EXIT
 
+# The privileged work happens before the mode file changes. A password prompt
+# that cannot be answered has to leave the machine as it was: shadow mode over
+# inert natives is a working state, unshadow mode over them is not.
+declare -a unexecuted_paths=() unexecuted_names=() restore_paths=()
 if [[ "$unexec" == hide ]]; then
-    declare -a unexecuted_paths=() unexecuted_names=()
     # Returns 0 only when the file is newly listed, so a packager's second name
     # for the same file (Arch /bin/node and /usr/bin/node) is handled once.
     unexec_record() {
@@ -133,7 +166,7 @@ if [[ "$unexec" == hide ]]; then
         unexec_record "$candidate" "$resolved" || continue
     done < <(unexec_targets)
     # The list that restores these files is written before any of them changes,
-    # so a broken pipe or a failed chmod can never strand an inerted binary.
+    # so a broken pipe or a failed chmod cannot strand an inerted binary.
     temporary="$(mktemp "$config/.unexecuted.XXXXXX")"
     trap 'rm -f -- "$temporary"' EXIT
     if ((${#unexecuted_paths[@]})); then
@@ -144,22 +177,39 @@ if [[ "$unexec" == hide ]]; then
     mv -f -- "$temporary" "$unexecuted_file"
     unexec_own "$unexecuted_file"
     trap - EXIT
-    index=0
-    while [[ "$index" -lt ${#unexecuted_paths[@]} ]]; do
-        if [[ -x "${unexecuted_paths[index]}" ]]; then
-            unexec_chmod a-x "${unexecuted_paths[index]}" || exit 1
-            unexec_note "inert:    ${unexecuted_names[index]} -> ${unexecuted_paths[index]} (mode $(stat -c '%a' "${unexecuted_paths[index]}" 2>/dev/null || printf 'unknown'))" || true
-        else
-            unexec_note "inert:    ${unexecuted_names[index]} -> ${unexecuted_paths[index]} (already non-executable)" || true
-        fi
-        index=$((index + 1))
-    done
+    if ((${#unexecuted_paths[@]})); then
+        unexec_apply a-x \
+            'run it where a password can be typed: sandwich shadow --unexecute' \
+            "${unexecuted_paths[@]}" || exit 1
+    fi
 elif [[ "$unexec" == show && -f "$unexecuted_file" ]]; then
-    while IFS= read -r resolved; do
-        [[ -n "$resolved" ]] || continue
-        unexec_chmod a+x "$resolved" || exit 1
-        unexec_note "executable: $resolved (mode $(stat -c '%a' "$resolved" 2>/dev/null || printf 'unknown'))" || true
+    while IFS= read -r path_entry; do
+        [[ -n "$path_entry" ]] && restore_paths+=("$path_entry")
     done <"$unexecuted_file"
+    if ((${#restore_paths[@]})); then
+        unexec_apply a+x \
+            'run it where a password can be typed: sandwich unshadow' \
+            "${restore_paths[@]}" || exit 1
+    fi
+fi
+
+temporary="$(mktemp "$config/.mode.XXXXXX")"
+trap 'rm -f -- "$temporary"' EXIT
+printf '%s\n' "$mode" >"$temporary"
+mv -f -- "$temporary" "$config/mode"
+unexec_own "$config/mode"
+trap - EXIT
+
+# Reported last, so the printed modes are the ones now on disk.
+index=0
+while [[ "$index" -lt ${#unexecuted_paths[@]} ]]; do
+    unexec_note "inert:    ${unexecuted_names[index]} -> ${unexecuted_paths[index]} (mode $(stat -c '%a' "${unexecuted_paths[index]}" 2>/dev/null || printf 'unknown'))" || true
+    index=$((index + 1))
+done
+if [[ "$unexec" == show ]]; then
+    for path_entry in "${restore_paths[@]}"; do
+        unexec_note "executable: ${path_entry} (mode $(stat -c '%a' "$path_entry" 2>/dev/null || printf 'unknown'))" || true
+    done
     rm -f -- "$unexecuted_file"
 fi
 

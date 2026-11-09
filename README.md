@@ -98,7 +98,7 @@ sandwich repository update ...   # prepare a verified owner branch; never push i
 ```bash
 sandwich doctor                         # exact paths, runtime capability, mode
 sandwich shadow                         # persist Bun compatibility mode
-sudo sandwich shadow --unexecute        # remove the execute bit on the native binaries
+sandwich shadow --unexecute               # also clear the execute bit on the natives (asks for a password)
 eval "$(sandwich shadow --shell=bash)"   # activate in the current Bash shell
 sandwich reshadow                        # re-verify and repair the shadow in place
 sandwich unshadow                        # persist native/mise forwarding
@@ -143,19 +143,28 @@ only when nothing requires it. The shims shadow those binaries regardless, so
 `node`, `npm`, and `npx` still run on Bun; `unshadow` is what hands them back.
 
 PATH order can be reinforced, and the reinforcement is always stated:
-`sudo sandwich shadow --unexecute` removes the execute bit from the native binaries
+`sandwich shadow --unexecute` removes the execute bit from the native binaries
 the shims replace, so even a program that never saw the shell's PATH cannot exec
 real Node — a fallback that would have run quietly now fails where it can be seen.
-The bit goes away on the file a packager's symlink points at (`/usr/bin/npm` and
+Those files belong to their packager, so the command primes `sudo` once and asks
+you for the password itself; prefixing `sudo` by hand is equally fine, and either
+way the state it writes stays owned by you. Re-running it needs no root at all,
+because only files whose bit differs are touched, and a password that cannot be
+typed stops the command before the mode changes, never half-applied. The bit goes
+away on the file a packager's symlink points at (`/usr/bin/npm` and
 `/usr/lib/node_modules/npm/bin/npm-cli.js` are one entry, one record line),
 `~/.config/sandwich/unexecuted` lists exactly those paths before any of them
-changes, and only those paths get the bit back: `sandwich unshadow` restores it
-because forwarding needs an executable native, and `sandwich shadow --unexecute=off`
-restores it while staying in shadow mode. Plain `sandwich shadow` never touches a
+changes, and only those paths get the bit back: `sandwich unshadow` restores it,
+asking for the password the same way, because forwarding needs an executable
+native, and `sandwich shadow --unexecute=off` restores it while staying in shadow
+mode. What comes back is the packager's own file, nothing else: which `node` a
+shell then finds is PATH's decision, so a Node that `mise` installs later is picked
+up without any Sandwich step, and while the mode is `shadow` the shims answer
+first regardless. Plain `sandwich shadow` never touches a
 system binary, which is what keeps the mode switch safe to script. Those binaries
 belong to their packager, so `pacman -Qkk nodejs npm` reports the mode change and a
 package update re-arms the bit; `doctor` then prints `re-armed:` with
-`sudo sandwich shadow --unexecute` as the fix, and `install-user.sh --reshadow`
+`sandwich shadow --unexecute` as the fix, and `install-user.sh --reshadow`
 reports the same drift (under root it re-applies it directly).
 `SANDWICH_UNEXECUTE_CHMOD` and `SANDWICH_NATIVE_DIRS` redirect the chmod and the
 scanned directories for rooted automation and tests.

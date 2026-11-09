@@ -513,6 +513,43 @@ unexec_plain_is_explicit() {
     unexec_run shadow
     [[ -x "$unexec_bin/node" ]]
 }
+# Files the user owns are chmod'd directly: no sudo is consulted, so the command
+# works with sudo present but unusable.
+unexec_no_root_when_owned() {
+    local nosudo="$fixture/unexecute-nosudo"
+    mkdir -p "$nosudo"
+    printf '#!/bin/sh\nexit 1\n' >"$nosudo/sudo"
+    chmod 755 "$nosudo/sudo"
+    chmod 755 "$unexec_bin/node" "$unexec_bin/npm"
+    rm -f -- "$unexec_config/unexecuted"
+    PATH="$nosudo:$PATH" env SANDWICH_CONFIG_HOME="$unexec_config" \
+        SANDWICH_NATIVE_DIRS="$unexec_bin" SANDWICH_UNEXECUTE_CHMOD= DO_NOT_TRACK=1 \
+        bash "$root/scripts/shadow.sh" shadow --unexecute >/dev/null
+}
+# A failed chmod stops the command before the mode file is written, so the
+# machine is never left unshadowed over binaries it just made inert.
+unexec_failure_leaves_mode_alone() {
+    local state="$fixture/unexecute-failed"
+    mkdir -p "$state"
+    printf 'unshadow\n' >"$state/mode"
+    chmod 755 "$unexec_bin/node" "$unexec_bin/npm"
+    ! env SANDWICH_CONFIG_HOME="$state" SANDWICH_NATIVE_DIRS="$unexec_bin" \
+        SANDWICH_UNEXECUTE_CHMOD=false DO_NOT_TRACK=1 \
+        bash "$root/scripts/shadow.sh" shadow --unexecute >/dev/null 2>&1
+    [[ "$(cat "$state/mode")" == unshadow && -s "$state/unexecuted" ]]
+}
+unexec_restore_failure_leaves_mode_alone() {
+    local state="$fixture/unexecute-failed-off"
+    mkdir -p "$state"
+    printf 'shadow\n' >"$state/mode"
+    chmod 644 "$unexec_bin/node" "$unexec_bin/npm"
+    printf '%s\n' "$unexec_node" >"$state/unexecuted"
+    ! env SANDWICH_CONFIG_HOME="$state" SANDWICH_NATIVE_DIRS="$unexec_bin" \
+        SANDWICH_UNEXECUTE_CHMOD=false DO_NOT_TRACK=1 \
+        bash "$root/scripts/shadow.sh" shadow --unexecute=off >/dev/null 2>&1
+    [[ "$(cat "$state/mode")" == shadow && -s "$state/unexecuted" ]] &&
+        test ! -x "$unexec_bin/node"
+}
 check "shadow --unexecute removes the native execute bit" unexec_run shadow --unexecute
 check "unexecute leaves the native binary non-executable" test ! -x "$unexec_bin/node"
 check "unexecute records the resolved binary, not the symlink" \
@@ -524,6 +561,10 @@ check "unshadow restores every recorded binary" test -x "$unexec_bin/node"
 check "unshadow clears the unexecute record" test ! -e "$unexec_config/unexecuted"
 check "shadow --unexecute=off restores the bit and stays in shadow mode" unexec_off_keeps_shadow
 check "plain shadow changes no system binary on its own" unexec_plain_is_explicit
+check "unexecute needs no root for binaries the user owns" unexec_no_root_when_owned
+check "unexecute without a chmod seam clears the bit directly" test ! -x "$unexec_bin/node"
+check "a failed unexecute chmod leaves the mode alone" unexec_failure_leaves_mode_alone
+check "a failed restore leaves the mode and binaries alone" unexec_restore_failure_leaves_mode_alone
 doctor_reports_inert() {
     local record="$fixture/unexecute-doctor" output=""
     mkdir -p "$record"
