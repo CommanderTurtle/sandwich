@@ -141,19 +141,29 @@ doctor() {
         printf '  retained:  %s\n' "${retained[@]}"
         printf '    note:    its packager pins this runtime; the shims shadow it. sandwich unshadow uses it again\n'
     fi
-    # Unexecute removes the execute bit from the natives. A package update puts
-    # it back, and that is when the shadow starts leaking to absolute-path callers.
-    local unexecuted_path=""
-    if [[ -f "$SANDWICH_CONFIG_DIR/unexecuted" ]]; then
-        while IFS= read -r unexecuted_path; do
-            [[ -n "$unexecuted_path" ]] || continue
-            if [[ -x "$unexecuted_path" ]]; then
-                printf '  re-armed:  %s (the execute bit came back)\n' "$unexecuted_path"
-                printf '    fix:       sandwich shadow --unexecute\n'
+    # Inerting clears the group and other execute bits, which is what stops an
+    # ordinary process reaching real Node by absolute path. A package update puts
+    # those bits back, and that is when the shadow starts leaking.
+    local inert_line="" inert_path="" inert_archive=""
+    if [[ -f "$SANDWICH_CONFIG_DIR/inert" ]]; then
+        while IFS= read -r inert_line; do
+            [[ -n "$inert_line" ]] || continue
+            inert_path="${inert_line#*$'\t'}"
+            [[ "$inert_path" == "$inert_line" ]] && inert_path="$inert_line"
+            if [[ ! -e "$inert_path" ]]; then
+                printf '  inert:     %s (its packager removed it)\n' "$inert_path"
+            elif bs_nonowner_inert "$inert_path"; then
+                printf '  inert:     %s (mode %s, its owner keeps execute)\n' "$inert_path" "$(stat -c '%a' "$inert_path")"
             else
-                printf '  inert:     %s\n' "$unexecuted_path"
+                printf '  re-armed:  %s (mode %s; its packager restored the bits)\n' "$inert_path" "$(stat -c '%a' "$inert_path")"
+                printf '    fix:       sandwich inert\n'
             fi
-        done <"$SANDWICH_CONFIG_DIR/unexecuted"
+        done <"$SANDWICH_CONFIG_DIR/inert"
+        inert_archive="$SANDWICH_STATE_DIR/inert"
+        if [[ -d "$inert_archive" ]]; then
+            printf '  archive:   %s (%s archived files, exact restore)\n' "$inert_archive" \
+                "$(find "$inert_archive" -maxdepth 1 -type f -name '*.tar.gz' 2>/dev/null | wc -l)"
+        fi
     fi
 
     if [[ -f "$HOME/package.json" ]]; then
@@ -206,6 +216,17 @@ case "${1:-doctor}" in
         mode="$1"
         shift
         exec bash "$SANDWICH_ROOT/scripts/shadow.sh" "$mode" "$@"
+        ;;
+    inert)
+        # Inerting the natives only makes sense with the shims in front of them,
+        # so it implies shadow mode; the bits are the part being changed.
+        shift
+        exec bash "$SANDWICH_ROOT/scripts/shadow.sh" shadow --inert "$@"
+        ;;
+    uninert)
+        # Handing the bits back leaves the compatibility mode as it was.
+        shift
+        exec bash "$SANDWICH_ROOT/scripts/shadow.sh" "$SANDWICH_MODE" --inert=off "$@"
         ;;
     reshadow)
         exec bash "$SANDWICH_ROOT/scripts/install-user.sh" --reshadow
@@ -291,11 +312,12 @@ case "${1:-doctor}" in
         ;;
     help|--help|-h)
         cat <<'EOF'
-usage: sandwich [doctor|shadow|unshadow|reshadow|resolve|bunRoot|audit|checkExpr|checkFence|checkZoo|hermes|integrations|repository|version|help]
+usage: sandwich [doctor|shadow|inert|uninert|unshadow|reshadow|resolve|bunRoot|audit|checkExpr|checkFence|checkZoo|hermes|integrations|repository|version|help]
 
   sandwich doctor  verify Bun and every compatibility shim
   sandwich shadow  prefer Bun compatibility shims (prints current-shell activation)
-  sandwich shadow --unexecute  also clear the execute bit on the native binaries (asks for a password; --unexecute=off restores)
+  sandwich inert  also make the native binaries inert for non-owners, archiving the originals (asks for a password)
+  sandwich uninert  hand the execute bits back, restoring the archived files exactly
   sandwich unshadow  forward compatibility commands to native/mise commands
   sandwich reshadow  re-establish the shadow after mise upgrade, mup, or omarchy update
   sandwich resolve [--dry-run]  refresh stable npm/pnpm/yarn compatibility labels
@@ -325,6 +347,6 @@ to reapply the integrations configured in Sandwich's .env.
 EOF
         ;;
     *)
-        bs_die "usage: sandwich [doctor|shadow|unshadow|reshadow|resolve|bunRoot|audit|checkExpr|checkFence|checkZoo|hermes|integrations|repository|version|help]"
+        bs_die "usage: sandwich [doctor|shadow|inert|uninert|unshadow|reshadow|resolve|bunRoot|audit|checkExpr|checkFence|checkZoo|hermes|integrations|repository|version|help]"
         ;;
 esac

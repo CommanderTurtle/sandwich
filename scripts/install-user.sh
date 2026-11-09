@@ -72,21 +72,24 @@ if ! grep -Fq "BUN_INSTALL_GLOBAL_DIR:-\"$global_dir\"" "$bashrc" 2>/dev/null; t
     drift=1
     drift_reasons+=("$bashrc block does not pin BUN_INSTALL_GLOBAL_DIR to $global_dir")
 fi
-# Unexecute is the user's decision, recorded by `sandwich shadow
-# --unexecute`; a package update re-arms the native binaries, and re-running the
-# command asks for the password it needs to disarm them again.
-if [[ -f "$SANDWICH_CONFIG_DIR/unexecuted" ]]; then
-    while IFS= read -r unexecuted_path; do
-        [[ -n "$unexecuted_path" ]] || continue
-        [[ -x "$unexecuted_path" ]] || continue
+# Inerting the natives is the user's decision, recorded by `sandwich inert`; a
+# package update puts the group and other execute bits back, and re-running the
+# command asks for the password it needs to clear them again.
+if [[ -f "$SANDWICH_CONFIG_DIR/inert" ]]; then
+    while IFS= read -r inert_line; do
+        [[ -n "$inert_line" ]] || continue
+        inert_path="${inert_line#*$'\t'}"
+        [[ "$inert_path" == "$inert_line" ]] && inert_path="$inert_line"
+        [[ -e "$inert_path" ]] || continue
+        bs_nonowner_inert "$inert_path" && continue
         if ((EUID == 0)); then
-            chmod a-x -- "$unexecuted_path"
-            printf '  inert:    %s (a package update restored the execute bit)\n' "$unexecuted_path"
+            chmod g-x,o-x -- "$inert_path"
+            printf '  inert:    %s (its packager restored the execute bits)\n' "$inert_path"
         else
             drift=1
-            drift_reasons+=("native binary is executable again: $unexecuted_path (sandwich shadow --unexecute)")
+            drift_reasons+=("native binary is executable again: $inert_path (sandwich inert)")
         fi
-    done <"$SANDWICH_CONFIG_DIR/unexecuted"
+    done <"$SANDWICH_CONFIG_DIR/inert"
 fi
 for name in bun bunx node npm npx pnpm pnpx yarn yarnpkg corepack; do
     candidate="$bun_bin/$name"

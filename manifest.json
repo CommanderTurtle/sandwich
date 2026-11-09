@@ -45,13 +45,13 @@
       "mutating": true,
       "human_confirmation": false
     },
-    "shadow_unexecute": {
-      "argv": ["bin/sandwich", "shadow", "--unexecute"],
+    "inert": {
+      "argv": ["bin/sandwich", "inert"],
       "mutating": true,
       "human_confirmation": true
     },
-    "shadow_unexecute_off": {
-      "argv": ["bin/sandwich", "shadow", "--unexecute=off"],
+    "uninert": {
+      "argv": ["bin/sandwich", "uninert"],
       "mutating": true,
       "human_confirmation": true
     },

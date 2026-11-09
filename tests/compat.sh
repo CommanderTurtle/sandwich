@@ -57,8 +57,8 @@ check "component manifest matches CLI version" \
         if (manifest.operations.integrations_reconcile.human_confirmation !== true) process.exit(1);
         if (manifest.operations.integrations_update.maintenance_window !== true) process.exit(1);
         if (manifest.operations.repository_audit.mutating !== false) process.exit(1);
-        if (manifest.operations.shadow_unexecute.human_confirmation !== true) process.exit(1);
-        if (manifest.operations.shadow_unexecute_off.mutating !== true) process.exit(1);
+        if (manifest.operations.inert.human_confirmation !== true) process.exit(1);
+        if (manifest.operations.uninert.mutating !== true) process.exit(1);
         if (manifest.operations.reshadow.human_confirmation !== false) process.exit(1);
         if (manifest.operations.repository_update.human_confirmation !== true) process.exit(1);
         if (manifest.operations.hermes_check.mutating !== false) process.exit(1);
@@ -477,103 +477,260 @@ check "user installer check is read-only and succeeds" "$root/scripts/install-us
 check "foreign runtime audit is read-only and succeeds" \
     "$root/scripts/purge-foreign-runtimes.sh" --check
 
-# Unexecute: the shims have to win even against a caller that never saw the
-# shell's PATH. SANDWICH_UNEXECUTE_CHMOD keeps the fixture unprivileged and
-# SANDWICH_NATIVE_DIRS keeps it out of the system directories.
-unexec_bin="$fixture/unexecute"
-unexec_config="$fixture/unexecute-config"
-mkdir -p "$unexec_bin" "$unexec_config"
-printf '#!/bin/sh\nexit 0\n' >"$unexec_bin/node"
-printf '#!/bin/sh\nexit 0\n' >"$unexec_bin/npm"
-chmod 755 "$unexec_bin/node" "$unexec_bin/npm"
-unexec_node="$(readlink -f -- "$unexec_bin/node")"
-unexec_run() {
-    env SANDWICH_CONFIG_HOME="$unexec_config" SANDWICH_NATIVE_DIRS="$unexec_bin" \
-        SANDWICH_UNEXECUTE_CHMOD=chmod DO_NOT_TRACK=1 \
+# Inerting: the shims have to win even against a caller that never saw the shell's
+# PATH. SANDWICH_INERT_CHMOD keeps the fixture unprivileged, SANDWICH_NATIVE_DIRS
+# keeps it out of the system directories, and SANDWICH_STATE_HOME keeps the archives
+# out of the real state directory.
+inert_bin="$fixture/inert"
+inert_config="$fixture/inert-config"
+inert_state="$fixture/inert-state"
+mkdir -p "$inert_bin" "$inert_config"
+printf '#!/bin/sh\nexit 0\n' >"$inert_bin/node"
+printf '#!/bin/sh\nexit 0\n' >"$inert_bin/npm"
+chmod 755 "$inert_bin/node" "$inert_bin/npm"
+inert_node="$(readlink -f -- "$inert_bin/node")"
+inert_mode() { stat -c '%a' -- "$1"; }
+inert_run() {
+    env SANDWICH_CONFIG_HOME="$inert_config" SANDWICH_STATE_HOME="$inert_state" \
+        SANDWICH_NATIVE_DIRS="$inert_bin" SANDWICH_INERT_CHMOD=chmod DO_NOT_TRACK=1 \
         bash "$root/scripts/shadow.sh" "$@" >/dev/null
 }
-unexec_rerun() {
-    unexec_run shadow --unexecute
-    [[ "$(wc -l <"$unexec_config/unexecuted")" -eq 2 ]]
+inert_rerun() {
+    inert_run shadow --inert
+    [[ "$(wc -l <"$inert_config/inert")" -eq 2 ]]
 }
-unexec_dry_run() {
-    chmod 755 "$unexec_bin/npm"
-    unexec_run shadow --unexecute --dry-run
-    [[ -x "$unexec_bin/npm" ]]
+inert_dry_run() {
+    chmod 755 "$inert_bin/npm"
+    inert_run shadow --inert --dry-run
+    [[ "$(inert_mode "$inert_bin/npm")" == 755 ]]
 }
-unexec_off_keeps_shadow() {
-    unexec_run shadow --unexecute
-    [[ ! -x "$unexec_bin/node" ]] || return 1
-    unexec_run shadow --unexecute=off
-    [[ -x "$unexec_bin/node" && "$(cat "$unexec_config/mode")" == shadow && ! -e "$unexec_config/unexecuted" ]]
+inert_off_keeps_shadow() {
+    inert_run shadow --inert
+    [[ "$(inert_mode "$inert_bin/node")" == 744 ]] || return 1
+    inert_run shadow --inert=off
+    [[ "$(inert_mode "$inert_bin/node")" == 755 && "$(cat "$inert_config/mode")" == shadow &&
+        ! -e "$inert_config/inert" ]]
 }
-unexec_plain_is_explicit() {
-    unexec_run shadow --unexecute
-    chmod 755 "$unexec_bin/node"
-    unexec_run shadow
-    [[ -x "$unexec_bin/node" ]]
+inert_plain_is_explicit() {
+    inert_run shadow --inert
+    chmod 755 "$inert_bin/node"
+    inert_run shadow
+    [[ "$(inert_mode "$inert_bin/node")" == 755 ]]
+}
+inert_archives() {
+    local archive=""
+    chmod 755 "$inert_bin/node" "$inert_bin/npm"
+    rm -f -- "$inert_config/inert"
+    rm -rf -- "$inert_state/inert"
+    inert_run shadow --inert
+    archive="$inert_state/inert/$(printf '%s' "$inert_node" | sha1sum | cut -d' ' -f1).tar.gz"
+    [[ -f "$archive" ]] || return 1
+    contains "$(tar -tf "$archive")" "node"
+}
+# A packager's mode that is not 755 has to come back as it was, so the restore is
+# the archived (or recorded) mode rather than a blanket execute.
+inert_restores_exact_mode() {
+    local bins="$fixture/inert-modes" cfg="$fixture/inert-modes-config" state="$fixture/inert-modes-state"
+    mkdir -p "$bins" "$cfg"
+    printf '#!/bin/sh\nexit 0\n' >"$bins/node"
+    printf '#!/bin/sh\nexit 0\n' >"$bins/npm"
+    chmod 750 "$bins/node"
+    chmod 755 "$bins/npm"
+    env SANDWICH_CONFIG_HOME="$cfg" SANDWICH_STATE_HOME="$state" \
+        SANDWICH_NATIVE_DIRS="$bins" SANDWICH_INERT_CHMOD=chmod DO_NOT_TRACK=1 \
+        bash "$root/scripts/shadow.sh" shadow --inert >/dev/null
+    [[ "$(inert_mode "$bins/node")" == 740 ]] || return 1
+    contains "$(cat "$cfg/inert")" "$(printf '750\t%s' "$(readlink -f -- "$bins/node")")" || return 1
+    env SANDWICH_CONFIG_HOME="$cfg" SANDWICH_STATE_HOME="$state" \
+        SANDWICH_NATIVE_DIRS="$bins" SANDWICH_INERT_CHMOD=chmod DO_NOT_TRACK=1 \
+        bash "$root/scripts/shadow.sh" shadow --inert=off >/dev/null
+    [[ "$(inert_mode "$bins/node")" == 750 && "$(inert_mode "$bins/npm")" == 755 ]] &&
+        [[ ! -e "$state/inert" ]]
+}
+# Once a packager has replaced the file, extracting the archive would roll that
+# update back, so only the recorded mode comes back and the content stays new.
+inert_stale_archive_is_not_reapplied() {
+    local bins="$fixture/inert-stale" cfg="$fixture/inert-stale-config" state="$fixture/inert-stale-state"
+    mkdir -p "$bins" "$cfg"
+    printf '#!/bin/sh\nexit 0\n' >"$bins/node"
+    printf '#!/bin/sh\nexit 0\n' >"$bins/npm"
+    chmod 755 "$bins/node" "$bins/npm"
+    env SANDWICH_CONFIG_HOME="$cfg" SANDWICH_STATE_HOME="$state" \
+        SANDWICH_NATIVE_DIRS="$bins" SANDWICH_INERT_CHMOD=chmod DO_NOT_TRACK=1 \
+        bash "$root/scripts/shadow.sh" shadow --inert >/dev/null
+    printf '#!/bin/sh\nexit 7\n' >"$bins/node"
+    chmod 755 "$bins/node"
+    env SANDWICH_CONFIG_HOME="$cfg" SANDWICH_STATE_HOME="$state" \
+        SANDWICH_NATIVE_DIRS="$bins" SANDWICH_INERT_CHMOD=chmod DO_NOT_TRACK=1 \
+        bash "$root/scripts/shadow.sh" shadow --inert=off >/dev/null
+    "$bins/node"
+    local status=$?
+    [[ "$status" -eq 7 && "$(inert_mode "$bins/node")" == 755 ]] || return 1
+    [[ -z "$(find "$state/inert" -type f -name '*.tar.gz' -print -quit 2>/dev/null)" ]]
+}
+# A binary only its owner may exec is already inert for everyone else, so it is
+# neither touched nor recorded, which keeps a restore from adding a bit nothing
+# removed.
+inert_owner_only_skipped() {
+    local bins="$fixture/inert-owner" cfg="$fixture/inert-owner-config" state="$fixture/inert-owner-state"
+    mkdir -p "$bins" "$cfg"
+    printf '#!/bin/sh\nexit 0\n' >"$bins/node"
+    printf '#!/bin/sh\nexit 0\n' >"$bins/npm"
+    chmod 700 "$bins/node"
+    chmod 755 "$bins/npm"
+    env SANDWICH_CONFIG_HOME="$cfg" SANDWICH_STATE_HOME="$state" \
+        SANDWICH_NATIVE_DIRS="$bins" SANDWICH_INERT_CHMOD=chmod DO_NOT_TRACK=1 \
+        bash "$root/scripts/shadow.sh" shadow --inert >/dev/null
+    [[ "$(wc -l <"$cfg/inert")" -eq 1 ]] || return 1
+    contains "$(cat "$cfg/inert")" "$(printf '755\t%s' "$(readlink -f -- "$bins/npm")")" || return 1
+    [[ "$(inert_mode "$bins/node")" == 700 && "$(inert_mode "$bins/npm")" == 744 ]]
 }
 # Files the user owns are chmod'd directly: no sudo is consulted, so the command
 # works with sudo present but unusable.
-unexec_no_root_when_owned() {
-    local nosudo="$fixture/unexecute-nosudo"
+inert_no_root_when_owned() {
+    local nosudo="$fixture/inert-nosudo"
     mkdir -p "$nosudo"
     printf '#!/bin/sh\nexit 1\n' >"$nosudo/sudo"
     chmod 755 "$nosudo/sudo"
-    chmod 755 "$unexec_bin/node" "$unexec_bin/npm"
-    rm -f -- "$unexec_config/unexecuted"
-    PATH="$nosudo:$PATH" env SANDWICH_CONFIG_HOME="$unexec_config" \
-        SANDWICH_NATIVE_DIRS="$unexec_bin" SANDWICH_UNEXECUTE_CHMOD= DO_NOT_TRACK=1 \
-        bash "$root/scripts/shadow.sh" shadow --unexecute >/dev/null
+    chmod 755 "$inert_bin/node" "$inert_bin/npm"
+    rm -f -- "$inert_config/inert"
+    PATH="$nosudo:$PATH" env SANDWICH_CONFIG_HOME="$inert_config" \
+        SANDWICH_STATE_HOME="$inert_state" SANDWICH_NATIVE_DIRS="$inert_bin" \
+        SANDWICH_INERT_CHMOD= DO_NOT_TRACK=1 \
+        bash "$root/scripts/shadow.sh" shadow --inert >/dev/null
+    [[ "$(inert_mode "$inert_bin/node")" == 744 ]]
 }
-# A failed chmod stops the command before the mode file is written, so the
-# machine is never left unshadowed over binaries it just made inert.
-unexec_failure_leaves_mode_alone() {
-    local state="$fixture/unexecute-failed"
+# A failed chmod stops the command before the mode file is written, so the machine
+# is never left unshadowed over binaries it just made inert.
+inert_failure_leaves_mode_alone() {
+    local state="$fixture/inert-failed"
     mkdir -p "$state"
     printf 'unshadow\n' >"$state/mode"
-    chmod 755 "$unexec_bin/node" "$unexec_bin/npm"
-    ! env SANDWICH_CONFIG_HOME="$state" SANDWICH_NATIVE_DIRS="$unexec_bin" \
-        SANDWICH_UNEXECUTE_CHMOD=false DO_NOT_TRACK=1 \
-        bash "$root/scripts/shadow.sh" shadow --unexecute >/dev/null 2>&1
-    [[ "$(cat "$state/mode")" == unshadow && -s "$state/unexecuted" ]]
+    chmod 755 "$inert_bin/node" "$inert_bin/npm"
+    ! env SANDWICH_CONFIG_HOME="$state" SANDWICH_STATE_HOME="$inert_state" \
+        SANDWICH_NATIVE_DIRS="$inert_bin" SANDWICH_INERT_CHMOD=false DO_NOT_TRACK=1 \
+        bash "$root/scripts/shadow.sh" shadow --inert >/dev/null 2>&1
+    [[ "$(cat "$state/mode")" == unshadow && ! -e "$state/inert" ]] &&
+        [[ "$(inert_mode "$inert_bin/node")" == 755 ]]
 }
-unexec_restore_failure_leaves_mode_alone() {
-    local state="$fixture/unexecute-failed-off"
+# A file its packager already made executable again needs no privileged call: the
+# restore is then bookkeeping only, so neither a chmod nor an extraction touches it
+# (an extraction would also reset the mtime to the archived one).
+inert_restore_makes_no_privileged_call() {
+    local bins="$fixture/inert-noop" cfg="$fixture/inert-noop-config" state="$fixture/inert-noop-state"
+    local before="" after=""
+    mkdir -p "$bins" "$cfg"
+    printf '#!/bin/sh\nexit 0\n' >"$bins/node"
+    printf '#!/bin/sh\nexit 0\n' >"$bins/npm"
+    chmod 755 "$bins/node" "$bins/npm"
+    env SANDWICH_CONFIG_HOME="$cfg" SANDWICH_STATE_HOME="$state" \
+        SANDWICH_NATIVE_DIRS="$bins" SANDWICH_INERT_CHMOD=chmod DO_NOT_TRACK=1 \
+        bash "$root/scripts/shadow.sh" shadow --inert >/dev/null
+    [[ "$(inert_mode "$bins/node")" == 744 ]] || return 1
+    chmod 755 "$bins/node" "$bins/npm"
+    before="$(stat -c '%Y' -- "$bins/node")"
+    env SANDWICH_CONFIG_HOME="$cfg" SANDWICH_STATE_HOME="$state" \
+        SANDWICH_NATIVE_DIRS="$bins" SANDWICH_INERT_CHMOD=chmod DO_NOT_TRACK=1 \
+        bash "$root/scripts/shadow.sh" shadow --inert=off >/dev/null
+    after="$(stat -c '%Y' -- "$bins/node")"
+    [[ ! -e "$cfg/inert" && "$(inert_mode "$bins/node")" == 755 ]] &&
+        [[ "$before" == "$after" ]]
+}
+# A record that already existed survives a failed run byte for byte, since the
+# files it describes did not change.
+inert_failure_keeps_previous_record() {
+    local state="$fixture/inert-failed-record"
+    mkdir -p "$state"
+    chmod 755 "$inert_bin/node" "$inert_bin/npm"
+    printf '755\t%s\n' "$inert_node" >"$state/inert"
+    ! env SANDWICH_CONFIG_HOME="$state" SANDWICH_STATE_HOME="$inert_state" \
+        SANDWICH_NATIVE_DIRS="$inert_bin" SANDWICH_INERT_CHMOD=false DO_NOT_TRACK=1 \
+        bash "$root/scripts/shadow.sh" shadow --inert >/dev/null 2>&1
+    [[ "$(cat "$state/inert")" == "$(printf '755\t%s' "$inert_node")" ]] &&
+        [[ "$(inert_mode "$inert_bin/node")" == 755 ]]
+}
+inert_restore_failure_leaves_mode_alone() {
+    local state="$fixture/inert-failed-off"
     mkdir -p "$state"
     printf 'shadow\n' >"$state/mode"
-    chmod 644 "$unexec_bin/node" "$unexec_bin/npm"
-    printf '%s\n' "$unexec_node" >"$state/unexecuted"
-    ! env SANDWICH_CONFIG_HOME="$state" SANDWICH_NATIVE_DIRS="$unexec_bin" \
-        SANDWICH_UNEXECUTE_CHMOD=false DO_NOT_TRACK=1 \
-        bash "$root/scripts/shadow.sh" shadow --unexecute=off >/dev/null 2>&1
-    [[ "$(cat "$state/mode")" == shadow && -s "$state/unexecuted" ]] &&
-        test ! -x "$unexec_bin/node"
+    chmod 644 "$inert_bin/node" "$inert_bin/npm"
+    printf '%s\n' "$inert_node" >"$state/inert"
+    ! env SANDWICH_CONFIG_HOME="$state" SANDWICH_STATE_HOME="$inert_state" \
+        SANDWICH_INERT_ARCHIVE="$state/absent" SANDWICH_NATIVE_DIRS="$inert_bin" \
+        SANDWICH_INERT_CHMOD=false DO_NOT_TRACK=1 \
+        bash "$root/scripts/shadow.sh" shadow --inert=off >/dev/null 2>&1
+    [[ "$(cat "$state/mode")" == shadow && -s "$state/inert" ]] &&
+        [[ "$(inert_mode "$inert_bin/node")" == 644 ]]
 }
-check "shadow --unexecute removes the native execute bit" unexec_run shadow --unexecute
-check "unexecute leaves the native binary non-executable" test ! -x "$unexec_bin/node"
-check "unexecute records the resolved binary, not the symlink" \
-    contains "$(cat "$unexec_config/unexecuted")" "$unexec_node"
-check "unexecute rerun keeps one record per binary" unexec_rerun
-check "unexecute dry run leaves the execute bit alone" unexec_dry_run
-check "unshadow restores the native execute bit" unexec_run unshadow
-check "unshadow restores every recorded binary" test -x "$unexec_bin/node"
-check "unshadow clears the unexecute record" test ! -e "$unexec_config/unexecuted"
-check "shadow --unexecute=off restores the bit and stays in shadow mode" unexec_off_keeps_shadow
-check "plain shadow changes no system binary on its own" unexec_plain_is_explicit
-check "unexecute needs no root for binaries the user owns" unexec_no_root_when_owned
-check "unexecute without a chmod seam clears the bit directly" test ! -x "$unexec_bin/node"
-check "a failed unexecute chmod leaves the mode alone" unexec_failure_leaves_mode_alone
-check "a failed restore leaves the mode and binaries alone" unexec_restore_failure_leaves_mode_alone
+# The record written under the earlier name is adopted: a bare path restores the
+# group and other bits, which is all that name ever removed.
+inert_adopts_old_record() {
+    local state="$fixture/inert-legacy"
+    mkdir -p "$state"
+    chmod 644 "$inert_bin/node" "$inert_bin/npm"
+    printf '%s\n' "$inert_node" >"$state/unexecuted"
+    env SANDWICH_CONFIG_HOME="$state" SANDWICH_STATE_HOME="$inert_state" \
+        SANDWICH_INERT_ARCHIVE="$state/absent" SANDWICH_NATIVE_DIRS="$inert_bin" \
+        SANDWICH_INERT_CHMOD=chmod DO_NOT_TRACK=1 \
+        bash "$root/scripts/shadow.sh" shadow --inert=off >/dev/null
+    [[ ! -e "$state/unexecuted" && ! -e "$state/inert" ]] &&
+        [[ "$(inert_mode "$inert_bin/node")" == 655 ]]
+}
+# A record written before modes were stored gains the mode now observed, so the
+# restore that follows is exact rather than a bare bit handshake.
+inert_adopts_old_record_mode() {
+    local state="$fixture/inert-legacy-mode"
+    mkdir -p "$state"
+    chmod 755 "$inert_bin/node" "$inert_bin/npm"
+    printf '%s\n' "$inert_node" >"$state/unexecuted"
+    env SANDWICH_CONFIG_HOME="$state" SANDWICH_STATE_HOME="$inert_state" \
+        SANDWICH_NATIVE_DIRS="$inert_bin" SANDWICH_INERT_CHMOD=chmod DO_NOT_TRACK=1 \
+        bash "$root/scripts/shadow.sh" shadow --inert >/dev/null
+    contains "$(cat "$state/inert")" "$(printf '755\t%s' "$inert_node")" &&
+        [[ "$(inert_mode "$inert_bin/node")" == 744 ]]
+}
 doctor_reports_inert() {
-    local record="$fixture/unexecute-doctor" output=""
-    mkdir -p "$record"
-    chmod 644 "$unexec_bin/node"
-    printf '%s\n' "$unexec_node" >"$record/unexecuted"
-    output="$(env SANDWICH_CONFIG_HOME="$record" bash "$root/bin/sandwich" doctor 2>&1)"
-    [[ "$output" == *"inert:     $unexec_node"* ]]
+    local state="$fixture/inert-doctor" output=""
+    mkdir -p "$state"
+    chmod 644 "$inert_bin/node"
+    printf '%s\t%s\n' 755 "$inert_node" >"$state/inert"
+    output="$(env SANDWICH_CONFIG_HOME="$state" SANDWICH_STATE_HOME="$inert_state" bash "$root/bin/sandwich" doctor 2>&1)"
+    [[ "$output" == *"inert:     $inert_node (mode 644, its owner keeps execute)"* ]]
 }
+doctor_reports_rearmed() {
+    local state="$fixture/inert-doctor-rearmed" output=""
+    mkdir -p "$state"
+    chmod 755 "$inert_bin/node"
+    printf '%s\t%s\n' 755 "$inert_node" >"$state/inert"
+    output="$(env SANDWICH_CONFIG_HOME="$state" SANDWICH_STATE_HOME="$inert_state" bash "$root/bin/sandwich" doctor 2>&1)"
+    [[ "$output" == *"re-armed:  $inert_node (mode 755; its packager restored the bits)"* ]] &&
+        [[ "$output" == *"fix:       sandwich inert"* ]]
+}
+check "inert clears the group and other execute bits" inert_run shadow --inert
+check "inert leaves the owner execute bit alone" test "$(inert_mode "$inert_bin/node")" = 744
+check "inert records the mode and the resolved binary, not the symlink" \
+    contains "$(cat "$inert_config/inert")" "$(printf '755\t%s' "$inert_node")"
+check "inert rerun keeps one record per binary" inert_rerun
+check "inert writes an archive of the file it changed" inert_archives
+check "inert dry run leaves the modes alone" inert_dry_run
+check "inert skips a binary only its owner may exec" inert_owner_only_skipped
+check "inert needs no root for binaries the user owns" inert_no_root_when_owned
+check "inert without a chmod seam still clears the bits" test "$(inert_mode "$inert_bin/node")" = 744
+check "a failed inert chmod leaves the mode alone" inert_failure_leaves_mode_alone
+check "a failed inert run keeps the previous record intact" inert_failure_keeps_previous_record
+check "unshadow restores the recorded mode exactly" inert_run unshadow
+check "unshadow leaves every binary executable" test "$(inert_mode "$inert_bin/node")" = 755
+check "unshadow clears the inert record" test ! -e "$inert_config/inert"
+check "inert=off restores the bits and stays in shadow mode" inert_off_keeps_shadow
+check "inert restores a packager mode other than 755 exactly" inert_restores_exact_mode
+check "inert does not reapply an archive its packager superseded" inert_stale_archive_is_not_reapplied
+check "an already executable binary needs no privileged restore call" inert_restore_makes_no_privileged_call
+check "inert adopts a record written under the earlier name" inert_adopts_old_record
+check "inert fills in the mode a legacy record never stored" inert_adopts_old_record_mode
+check "plain shadow changes no system binary on its own" inert_plain_is_explicit
+check "a failed restore leaves the mode and binaries alone" inert_restore_failure_leaves_mode_alone
 check "doctor reports an inert native binary" doctor_reports_inert
+check "doctor reports a re-armed native binary with its fix" doctor_reports_rearmed
 
 # Doctor reads the versions a manager's directories declare instead of
 # remembering them, so an update by the manager is visible without Sandwich
