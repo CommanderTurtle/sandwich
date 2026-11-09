@@ -72,23 +72,18 @@ if ! grep -Fq "BUN_INSTALL_GLOBAL_DIR:-\"$global_dir\"" "$bashrc" 2>/dev/null; t
     drift=1
     drift_reasons+=("$bashrc block does not pin BUN_INSTALL_GLOBAL_DIR to $global_dir")
 fi
-# Inerting the natives is the user's decision, recorded by `sandwich inert`; a
-# package update puts the group and other execute bits back, and re-running the
-# command asks for the password it needs to clear them again.
+# Inerting is the user's decision, recorded by `sandwich inert`. A packager
+# reinstall puts the files back on disk; reshadow only reports that, since
+# relocating a whole install again is a choice, not a repair.
 if [[ -f "$SANDWICH_CONFIG_DIR/inert" ]]; then
     while IFS= read -r inert_line; do
-        [[ -n "$inert_line" ]] || continue
-        inert_path="${inert_line#*$'\t'}"
-        [[ "$inert_path" == "$inert_line" ]] && inert_path="$inert_line"
-        [[ -e "$inert_path" ]] || continue
-        bs_nonowner_inert "$inert_path" && continue
-        if ((EUID == 0)); then
-            chmod g-x,o-x -- "$inert_path"
-            printf '  inert:    %s (its packager restored the execute bits)\n' "$inert_path"
-        else
+        [[ "$inert_line" == relocated$'\t'* ]] || continue
+        IFS=$'\t' read -r _ inert_utc inert_pkgs inert_archive inert_marker inert_count inert_entries <<<"$inert_line"
+        for inert_entry in ${inert_entries//,/ }; do
+            [[ -e "$inert_entry" ]] || continue
             drift=1
-            drift_reasons+=("native binary is executable again: $inert_path (sandwich inert)")
-        fi
+            drift_reasons+=("native Node install is back on disk: $inert_entry (sandwich inert archives it again)")
+        done
     done <"$SANDWICH_CONFIG_DIR/inert"
 fi
 for name in bun bunx node npm npx pnpm pnpx yarn yarnpkg corepack; do

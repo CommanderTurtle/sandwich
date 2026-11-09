@@ -289,19 +289,6 @@ bs_note() {
     printf 'sandwich: %s\n' "$*" >&2
 }
 
-# Whether a file is inert for every user but its owner. Group and other execute
-# are what an ordinary process needs; the owner keeps whatever the packager gave
-# it, so a rooted package transaction and its scriptlets still exec the file. An
-# unreadable or absent file returns 2, which is not "inert" to a caller that has
-# to decide on its own.
-bs_nonowner_inert() {
-    local perm mode
-    perm="$(stat -c '%a' -- "$1" 2>/dev/null)" || return 2
-    [[ "$perm" =~ ^[0-7]+$ ]] || return 2
-    mode="$((8#$perm))"
-    (( (mode & 8#011) == 0 ))
-}
-
 bs_workspace_filter() {
     local workspace="$1"
     if [[ "$workspace" == ./* || "$workspace" == ../* || "$workspace" == /* ]]; then

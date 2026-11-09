@@ -141,29 +141,30 @@ doctor() {
         printf '  retained:  %s\n' "${retained[@]}"
         printf '    note:    its packager pins this runtime; the shims shadow it. sandwich unshadow uses it again\n'
     fi
-    # Inerting clears the group and other execute bits, which is what stops an
-    # ordinary process reaching real Node by absolute path. A package update puts
-    # those bits back, and that is when the shadow starts leaking.
-    local inert_line="" inert_path="" inert_archive=""
+    # Inert archives the native Node install and takes it away, so the only Node
+    # to be found is the shim on PATH. A packager reinstall puts the files back,
+    # and that is when the shadow starts leaking to absolute-path callers again.
+    local inert_line="" inert_utc="" inert_pkgs="" inert_archive="" inert_marker="" inert_files="" inert_entries=""
+    local inert_entry="" back=""
     if [[ -f "$SANDWICH_CONFIG_DIR/inert" ]]; then
         while IFS= read -r inert_line; do
-            [[ -n "$inert_line" ]] || continue
-            inert_path="${inert_line#*$'\t'}"
-            [[ "$inert_path" == "$inert_line" ]] && inert_path="$inert_line"
-            if [[ ! -e "$inert_path" ]]; then
-                printf '  inert:     %s (its packager removed it)\n' "$inert_path"
-            elif bs_nonowner_inert "$inert_path"; then
-                printf '  inert:     %s (mode %s, its owner keeps execute)\n' "$inert_path" "$(stat -c '%a' "$inert_path")"
+            [[ "$inert_line" == relocated$'\t'* ]] || continue
+            IFS=$'\t' read -r _ inert_utc inert_pkgs inert_archive inert_marker inert_files inert_entries <<<"$inert_line"
+            back=""
+            for inert_entry in ${inert_entries//,/ }; do
+                [[ -e "$inert_entry" ]] && back="$inert_entry"
+            done
+            if [[ -n "$back" ]]; then
+                printf '  reinstalled: %s (its packager put the install back; sandwich inert archives it again)\n' "$back"
             else
-                printf '  re-armed:  %s (mode %s; its packager restored the bits)\n' "$inert_path" "$(stat -c '%a' "$inert_path")"
-                printf '    fix:       sandwich inert\n'
+                printf '  relocated:   %s files archived %s (packages: %s)\n' "$inert_files" "$inert_utc" "${inert_pkgs:-none named}"
+                printf '    archive:   %s\n' "$inert_archive"
+                [[ -f "$inert_archive" ]] ||
+                    printf '    problem:   the archive is gone; reinstall Node from its packager\n'
+                printf '    marker:    %s (explains the empty directory)\n' "$inert_marker"
+                printf '    fix:       sandwich uninert restores the files exactly\n'
             fi
         done <"$SANDWICH_CONFIG_DIR/inert"
-        inert_archive="$SANDWICH_STATE_DIR/inert"
-        if [[ -d "$inert_archive" ]]; then
-            printf '  archive:   %s (%s archived files, exact restore)\n' "$inert_archive" \
-                "$(find "$inert_archive" -maxdepth 1 -type f -name '*.tar.gz' 2>/dev/null | wc -l)"
-        fi
     fi
 
     if [[ -f "$HOME/package.json" ]]; then
@@ -316,8 +317,8 @@ usage: sandwich [doctor|shadow|inert|uninert|unshadow|reshadow|resolve|bunRoot|a
 
   sandwich doctor  verify Bun and every compatibility shim
   sandwich shadow  prefer Bun compatibility shims (prints current-shell activation)
-  sandwich inert  also make the native binaries inert for non-owners, archiving the originals (asks for a password)
-  sandwich uninert  hand the execute bits back, restoring the archived files exactly
+  sandwich inert  archive and remove the native Node install so only the shims can be found (asks for a password)
+  sandwich uninert  extract the archive back, leaving any packager reinstall alone
   sandwich unshadow  forward compatibility commands to native/mise commands
   sandwich reshadow  re-establish the shadow after mise upgrade, mup, or omarchy update
   sandwich resolve [--dry-run]  refresh stable npm/pnpm/yarn compatibility labels

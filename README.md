@@ -98,8 +98,8 @@ sandwich repository update ...   # prepare a verified owner branch; never push i
 ```bash
 sandwich doctor                         # exact paths, runtime capability, mode
 sandwich shadow                         # persist Bun compatibility mode
-sandwich inert                            # make the natives inert for non-owners, archiving them (asks for a password)
-sandwich uninert                          # hand the execute bits back, from the archive
+sandwich inert                            # archive and remove the native Node install (asks for a password)
+sandwich uninert                          # extract the archive back, exactly as it was
 eval "$(sandwich shadow --shell=bash)"   # activate in the current Bash shell
 sandwich reshadow                        # re-verify and repair the shadow in place
 sandwich unshadow                        # persist native/mise forwarding
@@ -143,38 +143,42 @@ and `npm`), and the audit's `Arch:` line says the same, purging a pacman package
 only when nothing requires it. The shims shadow those binaries regardless, so
 `node`, `npm`, and `npx` still run on Bun; `unshadow` is what hands them back.
 
-PATH order can be reinforced, and the reinforcement is always stated:
-`sandwich inert` clears the group and other execute bits on the native binaries the
-shims replace, so a program that never saw the shell's PATH cannot exec real Node —
-a fallback that would have run quietly now fails where it can be seen. The file's own
-execute bit stays as its packager left it, and that is the point: an ordinary process
-needs one of the two bits that go away, while root, a package scriptlet, or a rooted
-service keeps the one that remains. Clearing every bit would stop root as well, since
-exec needs at least one execute bit from anyone, so the owner bit is deliberately left
-alone. Nothing moves and nothing is deleted; a mode bit cannot escalate a process or
-grant a capability.
-Before any bit changes, each file is archived with `tar` under
-`~/.local/state/sandwich/inert`, which carries its content, mode, owner and timestamps,
-and the mode is recorded beside the path in `~/.config/sandwich/inert`; only recorded
-paths are ever touched. `sandwich uninert` puts it back: an archive whose stored copy
-still matches the file on disk extracts exactly, and once the packager has replaced that
-content, extracting would roll the package's own update back, so only the recorded mode
-comes back and the archive is reported as `stale:` and dropped. `sandwich unshadow`
-hands the bits back too, because forwarding needs an executable native. What returns is
-the packager's own file, nothing else: which `node` a shell then finds is PATH's
-decision, so a Node that `mise` installs later is picked up without any Sandwich step,
-and while the mode is `shadow` the shims answer first regardless.
-Those files belong to their packager, so `inert` primes `sudo` once and asks for the
-password itself; prefixing `sudo` by hand is equally fine, and the state it writes stays
-owned by you either way. Re-running it needs no root, because files already inert are
-skipped, and a password that cannot be typed stops the command before the mode changes,
-never half-applied. `pacman -Qkk nodejs npm` reports the mode change, and a package
-update re-arms the bits: `doctor` then prints `re-armed:` with `sandwich inert` as the
-fix, and `install-user.sh --reshadow` reports the same drift (under root it re-applies
-it directly). Plain `sandwich shadow` never touches a system binary, which is what keeps
-the mode switch safe to script. `SANDWICH_INERT_CHMOD`, `SANDWICH_INERT_ARCHIVE` and
-`SANDWICH_NATIVE_DIRS` redirect the chmod, the archive directory, and the scanned
-directories for rooted automation and tests.
+PATH order can be reinforced, and the reinforcement is always stated: `sandwich inert`
+archives the native Node install and takes it away, so a script, a build step, or an AI
+agent that reaches for `/usr/bin/node`, `/usr/bin/npm`, or the code under
+`/usr/lib/node_modules` finds nothing there and uses the shims on PATH instead. No file
+mode is edited on the way in or out and ownership is never touched: root is asked for a
+password only to move files, which is the whole privilege involved, and a background
+process gains nothing from it either way.
+
+The set of files is whatever the packager says the Node packages own (`pacman -Ql`,
+falling back to `dpkg -L`), so the install goes as a unit and nothing belonging to
+another package is disturbed: on Arch that is `nodejs` and `npm`, about 2000 files and
+24 MB compressed. A gzip tar named after the moment and the packages
+(`20261109T0330Z--node-install--nodejs+npm.tar.gz`) is written under
+`~/.local/state/sandwich/inert` before anything is removed, then the files go, empty
+directories unwind from the deepest upwards, and a `what-is-this.txt` is left in the
+directory that held most of the install, telling whoever finds it that `node`, `npm`,
+`pnpm`, `yarn` and `corepack` on PATH run on Bun and that `npx --help` prints the Bun
+command in every shell. `sandwich uninert` extracts the archive back with mode,
+ownership and timestamps intact, and because it extracts with skip-old-files, a packager
+reinstall that happened in the meantime is left alone rather than downgraded; the marker
+and the archive are then removed. A failure part way through cannot strand anything: the
+record in `~/.config/sandwich/inert` is written before the first removal and is restored
+byte for byte if nothing was actually removed, and an archive that does not hold every
+listed file is discarded instead of trusted.
+
+Plain `sandwich shadow` never touches the install, which is what keeps the mode switch
+safe to script, and `sandwich unshadow` restores the install first because forwarding
+needs real files on disk. `doctor` prints `relocated:` with the archive and marker while
+the install is away, and `reinstalled:` with `sandwich inert` as the fix once the
+packager puts it back; `install-user.sh --reshadow` reports the same drift without
+deciding to archive again. Something that genuinely has to exec real Node - an extension
+host, a native-module build - is simply absent while the install is archived, so
+`sandwich uninert` is the answer, not a re-run with a different path. `SANDWICH_INERT_FILES`
+and `SANDWICH_INERT_PACKAGES` override the discovery, `SANDWICH_INERT_ARCHIVE` moves the
+archive directory, and `SANDWICH_INERT_RM`, `SANDWICH_INERT_TAR`, `SANDWICH_INERT_INSTALL`
+replace the privileged commands for automation and tests.
 
 Doctor separates PATH conflicts from runtime failures and prints each offender
 and the expected path. Native/mise commands are valid in unshadow mode. The
